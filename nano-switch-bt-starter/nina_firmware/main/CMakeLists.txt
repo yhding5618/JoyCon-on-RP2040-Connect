@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "bridge_uart.c"
+        "switch_hid.c"
+    INCLUDE_DIRS
+        "."
+        "../../shared/include"
+    REQUIRES
+        bt
+        driver
+        nvs_flash
+)

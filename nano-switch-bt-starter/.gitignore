@@ -1,0 +1,5 @@
+nina_firmware/build/
+nina_firmware/sdkconfig
+nina_firmware/sdkconfig.old
+__pycache__/
+*.pyc
