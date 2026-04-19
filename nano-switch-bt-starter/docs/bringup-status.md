@@ -98,6 +98,14 @@ This means:
 
 After that, pairing to a host was confirmed to work.
 
+The current recommended diagnostic command for Switch-side failures is:
+
+```powershell
+python host_tools\send_state.py dump-events COM3
+```
+
+That dumps the recent NINA event ring buffer, including HID callback events, GAP callback events, and a few internal HID API calls such as `REGISTER_APP`, `CONNECT`, `SEND_REPORT`, and bond clearing.
+
 ## Important Fixes Made During Bring-Up
 
 These are the key changes that were necessary to reach the current working state.

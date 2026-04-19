@@ -23,6 +23,8 @@ typedef enum {
   SB_MSG_HELLO = 0x01,
   SB_MSG_GET_STATUS = 0x02,
   SB_MSG_STATUS = 0x03,
+  SB_MSG_GET_EVENTS = 0x04,
+  SB_MSG_EVENTS = 0x05,
   SB_MSG_SET_STATE = 0x10,
   SB_MSG_VIRTUAL_CABLE_UNPLUG = 0x11,
   SB_MSG_CLEAR_BONDS = 0x12,
@@ -60,6 +62,17 @@ typedef enum {
   SB_MISC_CHARGING = 1u << 0,
   SB_MISC_CHARGING_GRIP = 1u << 1,
 } sb_misc_flag_bits_t;
+
+typedef enum {
+  SB_EVENT_SOURCE_NONE = 0x00,
+  SB_EVENT_SOURCE_HID_CALLBACK = 0x01,
+  SB_EVENT_SOURCE_GAP_CALLBACK = 0x02,
+  SB_EVENT_SOURCE_HID_API = 0x03,
+  SB_EVENT_SOURCE_BRIDGE = 0x04,
+} sb_event_source_t;
+
+#define SB_EVENT_DUMP_MAX_ENTRIES 5u
+#define SB_EVENT_LOG_MAX_ENTRIES 20u
 
 typedef struct SB_PACKED {
   uint8_t magic0;
@@ -108,6 +121,25 @@ typedef struct SB_PACKED {
   uint8_t last_gap_reason;
   uint8_t bond_device_count;
 } sb_status_payload_t;
+
+typedef struct SB_PACKED {
+  uint32_t timestamp_ms;
+  uint8_t source;
+  uint8_t event;
+  uint8_t arg0;
+  uint8_t arg1;
+} sb_event_entry_t;
+
+typedef struct SB_PACKED {
+  uint16_t first_sequence;
+  uint8_t chunk_index;
+  uint8_t chunk_count;
+  uint8_t entry_count;
+  uint8_t total_entries;
+  uint8_t overflowed;
+  uint8_t reserved;
+  sb_event_entry_t entries[SB_EVENT_DUMP_MAX_ENTRIES];
+} sb_event_dump_payload_t;
 
 typedef struct SB_PACKED {
   sb_frame_header_t header;

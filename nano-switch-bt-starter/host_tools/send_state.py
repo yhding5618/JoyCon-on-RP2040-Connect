@@ -11,16 +11,27 @@ MAGIC1 = 0x42
 VERSION = 0x01
 MSG_GET_STATUS = 0x02
 MSG_STATUS = 0x03
+MSG_GET_EVENTS = 0x04
+MSG_EVENTS = 0x05
 MSG_SET_STATE = 0x10
 MSG_VC_UNPLUG = 0x11
 MSG_CLEAR_BONDS = 0x12
 HEADER_SIZE = 8
+EVENT_PAYLOAD_SIZE = 48
 
 FLAG_BRIDGE_READY = 1 << 0
 FLAG_BT_READY = 1 << 1
 FLAG_HID_READY = 1 << 2
 FLAG_CONNECTED = 1 << 3
 FLAG_VIRTUAL_CABLE = 1 << 4
+
+EVENT_SOURCE_NAMES = {
+    0x00: "NONE",
+    0x01: "HID_CALLBACK",
+    0x02: "GAP_CALLBACK",
+    0x03: "HID_API",
+    0x04: "BRIDGE",
+}
 
 HID_EVENT_NAMES = {
     0x00: "INIT",
@@ -58,6 +69,22 @@ GAP_EVENT_NAMES = {
     0x0F: "QOS_CMPL",
     0x10: "ACL_CONN_CMPL",
     0x11: "ACL_DISCONN_CMPL",
+}
+
+HID_API_EVENT_NAMES = {
+    0x01: "SEND_REPORT",
+    0x02: "REGISTER_APP",
+    0x03: "CONNECT",
+    0x04: "VC_UNPLUG",
+    0x05: "CLEAR_BONDS_BEGIN",
+    0x06: "CLEAR_BONDS_DONE",
+    0x07: "REMOVE_BOND",
+}
+
+BRIDGE_EVENT_NAMES = {
+    MSG_GET_EVENTS: "GET_EVENTS",
+    MSG_VC_UNPLUG: "VIRTUAL_CABLE_UNPLUG",
+    MSG_CLEAR_BONDS: "CLEAR_BONDS",
 }
 
 
@@ -125,6 +152,60 @@ def flag_names(flags: int) -> list[str]:
     if flags & FLAG_VIRTUAL_CABLE:
         names.append("VIRTUAL_CABLE")
     return names
+
+
+def describe_event(source: int, event: int, arg0: int, arg1: int) -> tuple[str, str]:
+    if source == 0x01:
+        name = HID_EVENT_NAMES.get(event, f"0x{event:02x}")
+        if event in (0x00, 0x02, 0x07):
+            return name, f"status=0x{arg0:02x}"
+        if event in (0x04, 0x05, 0x0C):
+            return name, f"status=0x{arg0:02x} conn=0x{arg1:02x}"
+        if event == 0x06:
+            return name, f"status=0x{arg0:02x} report_id=0x{arg1:02x}"
+        if event in (0x08, 0x09):
+            return name, f"report_id=0x{arg0:02x} report_type=0x{arg1:02x}"
+        if event == 0x0A:
+            return name, f"protocol=0x{arg0:02x}"
+        if event == 0x0B:
+            return name, f"report_id=0x{arg0:02x} len=0x{arg1:02x}"
+        return name, f"arg0=0x{arg0:02x} arg1=0x{arg1:02x}"
+
+    if source == 0x02:
+        name = GAP_EVENT_NAMES.get(event, f"0x{event:02x}")
+        if event == 0x04:
+            return name, f"status=0x{arg0:02x}"
+        if event == 0x05:
+            return name, f"pin_digits={arg0}"
+        if event == 0x0A:
+            return name, f"status=0x{arg0:02x}"
+        if event == 0x0D:
+            return name, f"mode=0x{arg0:02x}"
+        if event == 0x10:
+            return name, f"status=0x{arg0:02x}"
+        if event == 0x11:
+            return name, f"reason=0x{arg1:02x}"
+        return name, f"arg0=0x{arg0:02x} arg1=0x{arg1:02x}"
+
+    if source == 0x03:
+        name = HID_API_EVENT_NAMES.get(event, f"0x{event:02x}")
+        if event == 0x01:
+            return name, f"status=0x{arg0:02x} report_id=0x{arg1:02x}"
+        if event in (0x02, 0x03, 0x04):
+            return name, f"status=0x{arg0:02x}"
+        if event == 0x05:
+            return name, f"bonds_before={arg0}"
+        if event == 0x06:
+            return name, f"status=0x{arg0:02x} bonds_after={arg1}"
+        if event == 0x07:
+            return name, f"status=0x{arg0:02x} index={arg1}"
+        return name, f"arg0=0x{arg0:02x} arg1=0x{arg1:02x}"
+
+    if source == 0x04:
+        name = BRIDGE_EVENT_NAMES.get(event, f"0x{event:02x}")
+        return name, f"arg0=0x{arg0:02x} arg1=0x{arg1:02x}"
+
+    return f"0x{event:02x}", f"arg0=0x{arg0:02x} arg1=0x{arg1:02x}"
 
 
 def decode_status_frame(frame: bytes) -> str | None:
@@ -225,6 +306,49 @@ def decode_status_frame(frame: bytes) -> str | None:
     return summary
 
 
+def decode_events_frame(frame: bytes) -> list[str] | None:
+    if len(frame) != HEADER_SIZE + EVENT_PAYLOAD_SIZE:
+        return None
+    if frame[3] != MSG_EVENTS:
+        return None
+
+    payload = frame[HEADER_SIZE:]
+    (
+        first_sequence,
+        chunk_index,
+        chunk_count,
+        entry_count,
+        total_entries,
+        overflowed,
+        _reserved,
+    ) = struct.unpack("<HBBBBBB", payload[:8])
+
+    lines = [
+        (
+            f"EVENTS chunk={chunk_index + 1}/{chunk_count} "
+            f"entries={entry_count} total={total_entries} "
+            f"overflowed={'yes' if overflowed else 'no'} "
+            f"first_seq={first_sequence}"
+        )
+    ]
+
+    offset = 8
+    for i in range(min(entry_count, 5)):
+        timestamp_ms, source, event, arg0, arg1 = struct.unpack(
+            "<IBBBB", payload[offset : offset + 8]
+        )
+        offset += 8
+        source_name = EVENT_SOURCE_NAMES.get(source, f"0x{source:02x}")
+        event_name, details = describe_event(source, event, arg0, arg1)
+        sequence = (first_sequence + i) & 0xFFFF
+        lines.append(
+            f"EVENT seq={sequence} t={timestamp_ms}ms source={source_name} "
+            f"event={event_name} {details}"
+        )
+
+    return lines
+
+
 def state_payload(args: argparse.Namespace) -> bytes:
     return struct.pack(
         "<IhhhhBBBB",
@@ -259,6 +383,12 @@ def read_reply(port: serial.Serial, total_wait_s: float = 1.0) -> None:
             decoded = decode_status_frame(frame)
             if decoded is not None:
                 print(decoded)
+                continue
+
+            event_lines = decode_events_frame(frame)
+            if event_lines is not None:
+                for line in event_lines:
+                    print(line)
     else:
         print("No reply received.")
 
@@ -285,6 +415,10 @@ def main() -> int:
     status.add_argument("port", help="Serial port, for example COM5.")
     status.add_argument("--baud", type=int, default=115200)
 
+    dump_events = subparsers.add_parser("dump-events", help="Request the recent NINA event log.")
+    dump_events.add_argument("port", help="Serial port, for example COM5.")
+    dump_events.add_argument("--baud", type=int, default=115200)
+
     unplug = subparsers.add_parser("unplug", help="Request a virtual cable unplug.")
     unplug.add_argument("port", help="Serial port, for example COM5.")
     unplug.add_argument("--baud", type=int, default=115200)
@@ -301,6 +435,9 @@ def main() -> int:
     elif args.command == "status":
         message_type = MSG_GET_STATUS
         payload = b""
+    elif args.command == "dump-events":
+        message_type = MSG_GET_EVENTS
+        payload = b""
     elif args.command == "clear-bonds":
         message_type = MSG_CLEAR_BONDS
         payload = b""
@@ -315,7 +452,7 @@ def main() -> int:
         port.reset_input_buffer()
         port.write(frame)
         port.flush()
-        read_reply(port)
+        read_reply(port, total_wait_s=1.5 if args.command == "dump-events" else 1.0)
 
     return 0
 

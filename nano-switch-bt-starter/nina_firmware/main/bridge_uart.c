@@ -121,6 +121,40 @@ static void bridge_uart_send_status(void) {
   bridge_uart_send(SB_MSG_STATUS, &status, sizeof(status));
 }
 
+static void bridge_uart_send_events(void) {
+  sb_event_entry_t entries[SB_EVENT_LOG_MAX_ENTRIES];
+  uint16_t first_sequence = 0u;
+  bool overflowed = false;
+  size_t total_entries = switch_hid_copy_event_log(
+      entries, SB_EVENT_LOG_MAX_ENTRIES, &first_sequence, &overflowed);
+  const uint8_t chunk_count = (uint8_t)(
+      total_entries == 0u ? 1u : ((total_entries + SB_EVENT_DUMP_MAX_ENTRIES - 1u) / SB_EVENT_DUMP_MAX_ENTRIES));
+  size_t sent_entries = 0u;
+
+  for (uint8_t chunk_index = 0u; chunk_index < chunk_count; ++chunk_index) {
+    sb_event_dump_payload_t payload;
+    const size_t remaining_entries = total_entries - sent_entries;
+    const uint8_t entry_count =
+        (uint8_t)(remaining_entries > SB_EVENT_DUMP_MAX_ENTRIES ? SB_EVENT_DUMP_MAX_ENTRIES
+                                                                : remaining_entries);
+
+    memset(&payload, 0, sizeof(payload));
+    payload.first_sequence = (uint16_t)(first_sequence + sent_entries);
+    payload.chunk_index = chunk_index;
+    payload.chunk_count = chunk_count;
+    payload.entry_count = entry_count;
+    payload.total_entries = (uint8_t)total_entries;
+    payload.overflowed = overflowed ? 1u : 0u;
+
+    if (entry_count > 0u) {
+      memcpy(payload.entries, &entries[sent_entries], (size_t)entry_count * sizeof(entries[0]));
+      sent_entries += entry_count;
+    }
+
+    bridge_uart_send(SB_MSG_EVENTS, &payload, sizeof(payload));
+  }
+}
+
 static void bridge_uart_handle_frame(const sb_frame_t *frame) {
   switch (frame->header.type) {
     case SB_MSG_HELLO:
@@ -129,6 +163,10 @@ static void bridge_uart_handle_frame(const sb_frame_t *frame) {
 
     case SB_MSG_GET_STATUS:
       bridge_uart_send_status();
+      break;
+
+    case SB_MSG_GET_EVENTS:
+      bridge_uart_send_events();
       break;
 
     case SB_MSG_SET_STATE:

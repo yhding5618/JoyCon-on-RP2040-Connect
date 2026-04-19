@@ -32,6 +32,7 @@ The result is a practical starting point for `PC -> RP2040 -> NINA -> Switch`. T
 - A `Left Joy-Con`-style Bluetooth HID identity with Joy-Con report IDs.
 - Periodic `0x30`-style input report generation from controller state received over UART.
 - Basic `0x21` subcommand replies for device info, report mode, SPI reads, player lights, IMU enable, vibration enable, and voltage queries.
+- A small NINA-side event log that can be dumped from the PC for HID and GAP troubleshooting.
 
 ## What Is Still Missing For Real Switch Support
 
@@ -54,6 +55,12 @@ As of `2026-04-19`, the transport bring-up is working and the NINA firmware now 
 - The HID layer now responds to common Joy-Con subcommands and emits Switch-style reports.
 
 The project is still not confirmed Switch-compatible. The next phase is hardware validation against a real Switch and then tightening whatever probe/reply details the console still rejects.
+
+For the current failure mode, the quickest diagnostic command is:
+
+```powershell
+python host_tools\send_state.py dump-events COM3
+```
 
 The most recent real-Switch test got through Bluetooth authentication and bonding, but the connection still dropped before any HID report exchange. In practice, that means the remaining blocker likely sits in the stock `esp_hidd` / SDP identity path, not only in the later Joy-Con subcommand replies. Existing ESP32 Switch-controller projects consistently point at a custom `esp-idf` fork for this layer, so keep that in mind before spending too long polishing app-layer behavior alone.
 

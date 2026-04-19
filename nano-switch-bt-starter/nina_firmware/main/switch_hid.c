@@ -12,6 +12,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "freertos/task.h"
 
 #define SWITCH_ACK_SIMPLE 0x80u
@@ -57,6 +58,7 @@
 #define SWITCH_SIMPLE_REPORT_BYTES 11u
 #define SWITCH_SPI_READ_MAX_BYTES 0x1Du
 #define SWITCH_MAX_BOND_DEVICES 16
+#define SWITCH_EVENT_RING_SIZE SB_EVENT_LOG_MAX_ENTRIES
 
 #define SWITCH_HID_STATUS_SUCCESS 0x00u
 #define SWITCH_HID_STATUS_ERROR 0x01u
@@ -77,6 +79,16 @@ typedef enum {
   SWITCH_HID_EVENT_VC_UNPLUG = 0x0Cu,
   SWITCH_HID_EVENT_API_ERR = 0x0Du,
 } switch_hid_event_t;
+
+typedef enum {
+  SWITCH_HID_API_EVENT_SEND_REPORT = 0x01u,
+  SWITCH_HID_API_EVENT_REGISTER_APP = 0x02u,
+  SWITCH_HID_API_EVENT_CONNECT = 0x03u,
+  SWITCH_HID_API_EVENT_VC_UNPLUG = 0x04u,
+  SWITCH_HID_API_EVENT_CLEAR_BONDS_BEGIN = 0x05u,
+  SWITCH_HID_API_EVENT_CLEAR_BONDS_DONE = 0x06u,
+  SWITCH_HID_API_EVENT_REMOVE_BOND = 0x07u,
+} switch_hid_api_event_t;
 
 static const char *kLocalName = "Joy-Con (L)";
 static const uint8_t kPeripheralMinorClassGamepad = 0x02;
@@ -161,6 +173,12 @@ static uint8_t s_player_lights = 0;
 static bool s_imu_enabled = false;
 static bool s_vibration_enabled = false;
 static bool s_shipment_low_power = false;
+static sb_event_entry_t s_event_ring[SWITCH_EVENT_RING_SIZE];
+static size_t s_event_ring_head = 0u;
+static size_t s_event_ring_count = 0u;
+static uint16_t s_next_event_sequence = 1u;
+static bool s_event_ring_overflowed = false;
+static portMUX_TYPE s_event_ring_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void configure_gap_identity(void) {
   esp_bt_cod_t cod = {
@@ -174,6 +192,32 @@ static void configure_gap_identity(void) {
   esp_bt_dev_set_device_name(kLocalName);
   esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
   esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+}
+
+static uint32_t monotonic_timestamp_ms(void) {
+  return (uint32_t)(esp_timer_get_time() / 1000u);
+}
+
+static void record_event(uint8_t source, uint8_t event, uint8_t arg0, uint8_t arg1) {
+  const uint32_t timestamp_ms = monotonic_timestamp_ms();
+
+  portENTER_CRITICAL(&s_event_ring_lock);
+
+  s_event_ring[s_event_ring_head].timestamp_ms = timestamp_ms;
+  s_event_ring[s_event_ring_head].source = source;
+  s_event_ring[s_event_ring_head].event = event;
+  s_event_ring[s_event_ring_head].arg0 = arg0;
+  s_event_ring[s_event_ring_head].arg1 = arg1;
+
+  s_event_ring_head = (s_event_ring_head + 1u) % SWITCH_EVENT_RING_SIZE;
+  if (s_event_ring_count < SWITCH_EVENT_RING_SIZE) {
+    s_event_ring_count++;
+  } else {
+    s_event_ring_overflowed = true;
+  }
+  s_next_event_sequence++;
+
+  portEXIT_CRITICAL(&s_event_ring_lock);
 }
 
 static void note_hid_api_error(uint8_t event, uint8_t status) {
@@ -216,6 +260,10 @@ static esp_err_t send_hid_report(esp_hidd_report_type_t report_type,
 
   esp_err_t err = esp_bt_hid_device_send_report(
       report_type, report_id, (uint16_t)report_len, (uint8_t *)report_data);
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_SEND_REPORT,
+               (uint8_t)err,
+               report_id);
 
   s_status.last_hid_event = SWITCH_HID_EVENT_SEND_REPORT;
   s_status.last_hid_report_type = (uint8_t)report_type;
@@ -721,16 +769,23 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
   esp_bt_pin_code_t pin_code = {0};
 
   if (param == NULL) {
+    record_event(SB_EVENT_SOURCE_GAP_CALLBACK, (uint8_t)event, 0u, 0u);
     note_gap_event(event, 0u, 0u);
     return;
   }
 
   switch (event) {
     case ESP_BT_GAP_AUTH_CMPL_EVT:
+      record_event(
+          SB_EVENT_SOURCE_GAP_CALLBACK, (uint8_t)event, (uint8_t)param->auth_cmpl.stat, 0u);
       note_gap_event(event, (uint8_t)param->auth_cmpl.stat, 0u);
       break;
 
     case ESP_BT_GAP_PIN_REQ_EVT:
+      record_event(SB_EVENT_SOURCE_GAP_CALLBACK,
+                   (uint8_t)event,
+                   param->pin_req.min_16_digit ? 16u : 4u,
+                   0u);
       note_gap_event(event, param->pin_req.min_16_digit ? 16u : 4u, 0u);
       if (param->pin_req.min_16_digit) {
         (void)esp_bt_gap_pin_reply(param->pin_req.bda, true, 16u, pin_code);
@@ -745,36 +800,54 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
 
 #if (CONFIG_BT_SSP_ENABLED == true)
     case ESP_BT_GAP_CFM_REQ_EVT:
+      record_event(SB_EVENT_SOURCE_GAP_CALLBACK, (uint8_t)event, 1u, 0u);
       note_gap_event(event, 1u, 0u);
       (void)esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
       break;
 
     case ESP_BT_GAP_KEY_NOTIF_EVT:
+      record_event(SB_EVENT_SOURCE_GAP_CALLBACK, (uint8_t)event, 0u, 0u);
       note_gap_event(event, 0u, 0u);
       break;
 
     case ESP_BT_GAP_KEY_REQ_EVT:
+      record_event(SB_EVENT_SOURCE_GAP_CALLBACK, (uint8_t)event, 0u, 0u);
       note_gap_event(event, 0u, 0u);
       break;
 #endif
 
     case ESP_BT_GAP_CONFIG_EIR_DATA_EVT:
+      record_event(SB_EVENT_SOURCE_GAP_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->config_eir_data.stat,
+                   0u);
       note_gap_event(event, (uint8_t)param->config_eir_data.stat, 0u);
       break;
 
     case ESP_BT_GAP_MODE_CHG_EVT:
+      record_event(
+          SB_EVENT_SOURCE_GAP_CALLBACK, (uint8_t)event, (uint8_t)param->mode_chg.mode, 0u);
       note_gap_event(event, (uint8_t)param->mode_chg.mode, 0u);
       break;
 
     case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+      record_event(SB_EVENT_SOURCE_GAP_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->acl_conn_cmpl_stat.stat,
+                   0u);
       note_gap_event(event, (uint8_t)param->acl_conn_cmpl_stat.stat, 0u);
       break;
 
     case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
+      record_event(SB_EVENT_SOURCE_GAP_CALLBACK,
+                   (uint8_t)event,
+                   0u,
+                   (uint8_t)param->acl_disconn_cmpl_stat.reason);
       note_gap_event(event, 0u, (uint8_t)param->acl_disconn_cmpl_stat.reason);
       break;
 
     default:
+      record_event(SB_EVENT_SOURCE_GAP_CALLBACK, (uint8_t)event, 0u, 0u);
       note_gap_event(event, 0u, 0u);
       break;
   }
@@ -785,23 +858,45 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
 
   switch (event) {
     case ESP_HIDD_INIT_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK, (uint8_t)event, (uint8_t)param->init.status, 0u);
       s_status.last_hid_status = (uint8_t)param->init.status;
       if (param->init.status == ESP_HIDD_SUCCESS) {
-        esp_bt_hid_device_register_app((esp_hidd_app_param_t *)&kSwitchJoyConApp,
-                                       (esp_hidd_qos_param_t *)&kQos,
-                                       (esp_hidd_qos_param_t *)&kQos);
+        const esp_err_t register_err = esp_bt_hid_device_register_app(
+            (esp_hidd_app_param_t *)&kSwitchJoyConApp,
+            (esp_hidd_qos_param_t *)&kQos,
+            (esp_hidd_qos_param_t *)&kQos);
+        record_event(SB_EVENT_SOURCE_HID_API,
+                     SWITCH_HID_API_EVENT_REGISTER_APP,
+                     (uint8_t)register_err,
+                     0u);
+        if (register_err != ESP_OK) {
+          s_status.last_error = (uint8_t)register_err;
+        }
       } else {
         s_status.last_error = (uint8_t)param->init.status;
       }
       break;
 
     case ESP_HIDD_REGISTER_APP_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->register_app.status,
+                   param->register_app.in_use ? 1u : 0u);
       s_status.last_hid_status = (uint8_t)param->register_app.status;
       if (param->register_app.status == ESP_HIDD_SUCCESS) {
         s_status.flags |= SB_STATUS_FLAG_HID_READY | SB_STATUS_FLAG_BT_READY;
         if (param->register_app.in_use) {
           s_status.flags |= SB_STATUS_FLAG_VIRTUAL_CABLE;
-          (void)esp_bt_hid_device_connect(param->register_app.bd_addr);
+          {
+            esp_err_t connect_err = esp_bt_hid_device_connect(param->register_app.bd_addr);
+            record_event(SB_EVENT_SOURCE_HID_API,
+                         SWITCH_HID_API_EVENT_CONNECT,
+                         (uint8_t)connect_err,
+                         0u);
+            if (connect_err != ESP_OK) {
+              s_status.last_error = (uint8_t)connect_err;
+            }
+          }
         }
 
         configure_gap_identity();
@@ -811,18 +906,34 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
       break;
 
     case ESP_HIDD_OPEN_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->open.status,
+                   (uint8_t)param->open.conn_status);
       note_hid_connection_open((uint8_t)param->open.status, (uint8_t)param->open.conn_status);
       break;
 
     case ESP_HIDD_CLOSE_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->close.status,
+                   (uint8_t)param->close.conn_status);
       note_hid_connection_close((uint8_t)param->close.status, (uint8_t)param->close.conn_status);
       break;
 
     case ESP_HIDD_SET_PROTOCOL_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->set_protocol.protocol_mode,
+                   0u);
       s_status.protocol_mode = (uint8_t)param->set_protocol.protocol_mode;
       break;
 
     case ESP_HIDD_SET_REPORT_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   param->set_report.report_id,
+                   (uint8_t)param->set_report.report_type);
       s_status.last_hid_report_type = (uint8_t)param->set_report.report_type;
       s_status.last_hid_report_id = param->set_report.report_id;
       handle_output_report(
@@ -830,11 +941,19 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
       break;
 
     case ESP_HIDD_GET_REPORT_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   param->get_report.report_id,
+                   (uint8_t)param->get_report.report_type);
       s_status.last_hid_report_type = (uint8_t)param->get_report.report_type;
       s_status.last_hid_report_id = param->get_report.report_id;
       break;
 
     case ESP_HIDD_INTR_DATA_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   param->intr_data.report_id,
+                   (uint8_t)param->intr_data.len);
       s_status.last_hid_report_type = (uint8_t)ESP_HIDD_REPORT_TYPE_INTRDATA;
       s_status.last_hid_report_id = param->intr_data.report_id;
       handle_output_report(
@@ -842,6 +961,10 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
       break;
 
     case ESP_HIDD_SEND_REPORT_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->send_report.status,
+                   param->send_report.report_id);
       s_status.last_hid_status = (uint8_t)param->send_report.status;
       s_status.last_hid_report_type = (uint8_t)param->send_report.report_type;
       s_status.last_hid_report_id = param->send_report.report_id;
@@ -851,16 +974,25 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
       break;
 
     case ESP_HIDD_REPORT_ERR_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->report_err.status,
+                   0u);
       s_status.last_hid_status = (uint8_t)param->report_err.status;
       break;
 
     case ESP_HIDD_VC_UNPLUG_EVT:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK,
+                   (uint8_t)event,
+                   (uint8_t)param->vc_unplug.status,
+                   (uint8_t)param->vc_unplug.conn_status);
       s_status.last_hid_status = (uint8_t)param->vc_unplug.status;
       s_status.last_hid_conn_status = (uint8_t)param->vc_unplug.conn_status;
       s_status.flags &= (uint8_t)~SB_STATUS_FLAG_VIRTUAL_CABLE;
       break;
 
     default:
+      record_event(SB_EVENT_SOURCE_HID_CALLBACK, (uint8_t)event, 0u, 0u);
       break;
   }
 }
@@ -950,6 +1082,46 @@ void switch_hid_get_status(sb_status_payload_t *status) {
   *status = s_status;
 }
 
+size_t switch_hid_copy_event_log(sb_event_entry_t *entries,
+                                 size_t max_entries,
+                                 uint16_t *first_sequence,
+                                 bool *overflowed) {
+  size_t snapshot_count = 0u;
+  size_t start_index = 0u;
+  uint16_t start_sequence = 0u;
+  bool did_overflow = false;
+
+  portENTER_CRITICAL(&s_event_ring_lock);
+
+  snapshot_count = s_event_ring_count;
+  if (snapshot_count > max_entries) {
+    snapshot_count = max_entries;
+  }
+  if (snapshot_count > 0u) {
+    start_index = (s_event_ring_head + SWITCH_EVENT_RING_SIZE - snapshot_count) % SWITCH_EVENT_RING_SIZE;
+  }
+  start_sequence = (uint16_t)(s_next_event_sequence - snapshot_count);
+  did_overflow = s_event_ring_overflowed;
+
+  if (entries != NULL) {
+    for (size_t i = 0; i < snapshot_count; ++i) {
+      const size_t ring_index = (start_index + i) % SWITCH_EVENT_RING_SIZE;
+      entries[i] = s_event_ring[ring_index];
+    }
+  }
+
+  portEXIT_CRITICAL(&s_event_ring_lock);
+
+  if (first_sequence != NULL) {
+    *first_sequence = start_sequence;
+  }
+  if (overflowed != NULL) {
+    *overflowed = did_overflow;
+  }
+
+  return snapshot_count;
+}
+
 void switch_hid_tick(void) {
   uint64_t now = 0;
 
@@ -992,11 +1164,19 @@ void switch_hid_tick(void) {
 }
 
 esp_err_t switch_hid_virtual_cable_unplug(void) {
-  return esp_bt_hid_device_virtual_cable_unplug();
+  const esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
+  record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_VIRTUAL_CABLE_UNPLUG, 0u, 0u);
+  record_event(SB_EVENT_SOURCE_HID_API, SWITCH_HID_API_EVENT_VC_UNPLUG, (uint8_t)err, 0u);
+  return err;
 }
 
 esp_err_t switch_hid_clear_all_bonds(void) {
   esp_err_t result = ESP_OK;
+  record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_CLEAR_BONDS, 0u, 0u);
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_CLEAR_BONDS_BEGIN,
+               clamp_u8_count(esp_bt_gap_get_bond_device_num()),
+               0u);
 
   for (uint8_t attempt = 0; attempt < 6u; ++attempt) {
     esp_bd_addr_t devices[SWITCH_MAX_BOND_DEVICES];
@@ -1020,6 +1200,10 @@ esp_err_t switch_hid_clear_all_bonds(void) {
 
     for (int i = 0; i < device_count; ++i) {
       esp_err_t remove_err = esp_bt_gap_remove_bond_device(devices[i]);
+      record_event(SB_EVENT_SOURCE_HID_API,
+                   SWITCH_HID_API_EVENT_REMOVE_BOND,
+                   (uint8_t)remove_err,
+                   (uint8_t)i);
       if (remove_err != ESP_OK) {
         result = remove_err;
         s_status.last_error = 0xFDu;
@@ -1030,5 +1214,9 @@ esp_err_t switch_hid_clear_all_bonds(void) {
   }
 
   refresh_bond_device_count();
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_CLEAR_BONDS_DONE,
+               (uint8_t)result,
+               s_status.bond_device_count);
   return result;
 }

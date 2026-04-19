@@ -8,6 +8,10 @@
 esp_err_t switch_hid_init(void);
 void switch_hid_apply_state(const sb_controller_state_t *state);
 void switch_hid_get_status(sb_status_payload_t *status);
+size_t switch_hid_copy_event_log(sb_event_entry_t *entries,
+                                 size_t max_entries,
+                                 uint16_t *first_sequence,
+                                 bool *overflowed);
 void switch_hid_tick(void);
 esp_err_t switch_hid_virtual_cable_unplug(void);
 esp_err_t switch_hid_clear_all_bonds(void);
