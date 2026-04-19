@@ -28,10 +28,10 @@ Arduino's Nano RP2040 Connect variant maps the internal NINA link to RP2040 inte
 - `SPI1_COPI / UART1_RTS -> D28`
 - `SPI1_SCK -> D29`
 
-The Arduino core exposes the internal UART as `SerialHCI`, so the bridge sketch uses:
+The Arduino core exposes the internal NINA UART as `SerialNina`, so the bridge sketch uses:
 
 - `Serial` for the PC-facing USB CDC channel
-- `SerialHCI` for the NINA-facing internal UART
+- `SerialNina` for the NINA-facing internal UART
 
 This starter only uses TX/RX. CTS/RTS can be added later if you want stricter flow control.
 
@@ -63,6 +63,25 @@ Current message types:
 - `misc`
 - `battery_level`
 
+For the current `Left Joy-Con` scaffold, the `buttons` field uses these bits:
+
+- `SB_BTN_LJC_DOWN`
+- `SB_BTN_LJC_UP`
+- `SB_BTN_LJC_RIGHT`
+- `SB_BTN_LJC_LEFT`
+- `SB_BTN_LJC_SL`
+- `SB_BTN_LJC_SR`
+- `SB_BTN_LJC_L`
+- `SB_BTN_LJC_ZL`
+- `SB_BTN_LJC_MINUS`
+- `SB_BTN_LJC_STICK`
+- `SB_BTN_LJC_CAPTURE`
+
+The `misc` field currently uses:
+
+- `SB_MISC_CHARGING`
+- `SB_MISC_CHARGING_GRIP`
+
 ## NINA Firmware Layers
 
 The ESP-IDF app is split into:
@@ -76,14 +95,21 @@ The ESP-IDF app is split into:
 
 ## Current HID Behavior
 
-The starter HID implementation uses a generic gamepad descriptor so the NINA app has something real to register and send. This is intentionally a placeholder.
+The NINA app now presents a `Left Joy-Con`-style Bluetooth HID scaffold instead of the original generic gamepad placeholder.
+
+Implemented in the current scaffold:
+
+- Joy-Con-style report IDs and a vendor-defined HID descriptor
+- `0x21` subcommand replies for common controller-management requests
+- `0x30`-style standard input reports
+- a sparse fake SPI/config image for device info, colors, and baseline calibration reads
 
 The next meaningful Switch-specific upgrades are:
 
-1. Replace the starter descriptor with a Switch-compatible identity.
-2. Parse host output reports and build `0x21` subcommand responses.
-3. Stream `0x30` input reports at the right cadence.
-4. Add pairing persistence and any identity/calibration data the Switch expects.
+1. Verify the current Left Joy-Con scaffold against a real Switch pairing flow.
+2. Replace the sparse fake SPI/config image with stronger identity and persistence behavior.
+3. Add more subcommands as needed once the Switch's exact probe order is observed.
+4. Add real IMU, rumble translation, and pairing persistence.
 
 ## PC Tool
 

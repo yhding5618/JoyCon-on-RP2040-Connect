@@ -144,6 +144,11 @@ static void bridge_uart_handle_frame(const sb_frame_t *frame) {
       bridge_uart_send_status();
       break;
 
+    case SB_MSG_CLEAR_BONDS:
+      switch_hid_clear_all_bonds();
+      bridge_uart_send_status();
+      break;
+
     default:
       break;
   }

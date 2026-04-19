@@ -8,7 +8,7 @@
 - `esptool.py`
 - `pyserial` if you want to use the host test tool
 
-The recommendation to use ESP-IDF `v4.4.8` is deliberate: Arduino's `nina-fw` build instructions for the Nano RP2040 Connect target that branch, which reduces surprise when you are flashing through the board's established NINA path.
+The recommendation to use stock `ESP-IDF v4.4.8` is deliberate: Arduino's `nina-fw` build instructions for the Nano RP2040 Connect target that branch, which reduces surprise when you are flashing through the board's established NINA path.
 
 ## Flash Order
 
@@ -34,6 +34,29 @@ idf.py build
 Use the same serial port that the Nano exposes while `SerialNINAPassthrough` is running. If you use `esptool.py` directly, keep Arduino's `no_reset` note in mind for Nano RP2040 Connect passthrough flashing.
 
 If you prefer to stay close to Arduino's published flow, review the official `arduino/nina-fw` flashing notes first.
+
+On this board, the practical flash command should be explicit about baud:
+
+```sh
+idf.py -p COM3 -b 115200 flash
+```
+
+Replace `COM3` with the port currently exposed by the Nano while `SerialNINAPassthrough` is loaded.
+
+If `idf.py flash` still chooses the wrong baud or stalls at `Serial port COMx`, use the generated flash args directly:
+
+```sh
+C:\Espressif\python_env\idf4.4_py3.11_env\Scripts\python.exe ^
+  C:\Espressif\frameworks\esp-idf-v4.4.8\components\esptool_py\esptool\esptool.py ^
+  --chip esp32 --port COM3 --baud 115200 --before no_reset --after hard_reset ^
+  write_flash @build\flash_args
+```
+
+Common causes of a stall at `Serial port COMx`:
+
+- the RP2040 is still running `rp2040_bridge.ino` instead of `SerialNINAPassthrough`
+- another serial tool still has the COM port open
+- the COM port number changed after re-uploading the passthrough sketch or reconnecting USB
 
 ### 4. Restore The RP2040 Bridge
 

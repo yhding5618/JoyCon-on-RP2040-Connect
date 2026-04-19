@@ -14,25 +14,35 @@ The current repo is the starter implementation for that split.
 
 ## Where We Are
 
-The hardware and transport bring-up succeeded.
+The hardware and transport bring-up succeeded, and the NINA firmware has been moved to a first `Left Joy-Con` scaffold.
 
 Confirmed working:
 
 - The `RP2040` side uploads from Arduino IDE.
-- The custom `NINA` firmware builds with `ESP-IDF v4.4.6` and flashes through `SerialNINAPassthrough`.
+- The custom `NINA` firmware builds with stock `ESP-IDF v4.4.x` and flashes through `SerialNINAPassthrough`.
 - The shared bridge protocol works end to end.
 - The NINA Bluetooth Classic HID stack initializes.
-- The device advertises as `Nano Switch Starter`.
+- The device advertises as `Joy-Con (L)`.
 - Pairing to a normal host works.
+- The HID layer now emits `0x30`-style reports and replies to a small set of Joy-Con subcommands.
 
 Not done yet:
 
-- Nintendo Switch-specific HID identity
-- `OUTPUT 0x01` parsing
-- `INPUT 0x21` subcommand replies
-- `INPUT 0x30` streaming reports in Switch format
-- device info and SPI-flash-backed identity behavior
-- rumble, LEDs, IMU, and pairing persistence details expected by the Switch
+- verification against a real Switch pairing flow
+- any extra subcommands or timing quirks the Switch still insists on
+- pairing persistence and real SPI-flash-backed identity behavior
+- rumble, LEDs, IMU, and reconnect behavior polished beyond the starter scaffold
+
+Latest real-Switch result:
+
+- authentication completes and a bond is created
+- the HID stack then reports `OPEN status=0x01 conn_status=0x02`
+- the GAP layer reports `ACL_DISCONN_CMPL reason=0x13`
+- no `SET_REPORT`, `GET_REPORT`, or `INTR_DATA` traffic is seen before disconnect
+
+Why this matters:
+
+- the current blocker appears to be at or below the stock `esp_hidd` / SDP identity layer, not in the later Joy-Con subcommand reply code
 
 ## What Was Flashed
 
@@ -54,7 +64,7 @@ The NINA was flashed with the custom ESP-IDF project in:
 ## Working Toolchain
 
 - Arduino IDE with `Arduino Nano RP2040 Connect`
-- ESP-IDF `v4.4.6`
+- stock `ESP-IDF v4.4.x`
 
 Important NINA build settings:
 
@@ -173,6 +183,14 @@ Fix:
 - use `--before no_reset`
 - use `115200` baud for flashing through the Nano RP2040 Connect passthrough path
 
+Working command:
+
+```powershell
+idf.py -p COM3 -b 115200 flash
+```
+
+If `idf.py` still opens the port with the wrong baud, fall back to direct `esptool.py` with `--baud 115200` and `@build\flash_args`.
+
 ## Files Worth Reading First
 
 If resuming this project later, read these in order:
@@ -202,27 +220,32 @@ The NINA:
 - reads framed controller-state packets over UART
 - replies to `HELLO` and `GET_STATUS`
 - brings up Bluetooth Classic HID
-- advertises as `Nano Switch Starter`
-- exposes a generic gamepad HID placeholder
+- advertises as `Joy-Con (L)`
+- exposes Joy-Con report IDs instead of the old generic gamepad report
+- sends `0x30`-style reports from RP2040-provided state
+- replies to common Joy-Con subcommands such as device info, input report mode, SPI reads, player lights, IMU enable, vibration enable, and voltage query
+- serves a sparse fake SPI/config image with controller type, colors, and baseline calibration values
 
 This is enough for:
 
 - status polling
 - pairing to a normal host
+- exercising a first Left Joy-Con persona over Bluetooth HID
 
 This is not yet enough for:
 
-- pairing or behaving correctly as a Nintendo Switch controller
+- claiming full Switch compatibility
+- knowing which remaining details the real Switch still rejects
 
 ## Resume Plan
 
 The next implementation target should be:
 
 1. keep the current RP2040 bridge as-is unless debugging forces changes
-2. replace the generic HID placeholder in `nina_firmware/main/switch_hid.c`
-3. implement Switch-style `0x21` subcommand replies
-4. implement Switch-style `0x30` reports
-5. choose and lock a controller persona
+2. test the current Left Joy-Con scaffold against the Switch
+3. log which subcommands, timing, or identity reads still fail
+4. tighten the SPI/pairing identity behavior based on those observations
+5. only then add rumble and real IMU data
 
 Recommended first persona:
 
@@ -236,4 +259,7 @@ Reason:
 
 - The last confirmed RP2040 USB port was `COM3`, but do not assume it is stable across reconnects.
 - Pairing success so far was with a normal host, not with the Switch.
-- The current NINA HID implementation is intentionally a placeholder and should not be mistaken for partial Switch protocol support.
+- The current NINA HID implementation is no longer the original generic placeholder, but it is still a scaffold and should not yet be mistaken for confirmed Switch interoperability.
+- `SwitchCon`, `UARTSwitchCon`, and `BlueCon-esp32` all point at the custom `NathanReeves/esp-idf` fork rather than stock Espressif `esp-idf`.
+- That strongly suggests the remaining Switch rejection may be caused by differences in the underlying Classic HID implementation, not only by missing app-layer subcommands.
+- The current repo has been nudged closer to `SwitchCon` by matching its HID descriptor layout and a few early replies, but this has not yet been revalidated on hardware.

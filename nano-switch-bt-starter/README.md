@@ -5,7 +5,7 @@ This scaffold splits the Arduino Nano RP2040 Connect into two jobs:
 - The `RP2040` side is a USB-to-UART bridge that accepts control frames from your PC.
 - The `NINA-W102` side is an `ESP-IDF` app that exposes a Bluetooth HID device and consumes those frames.
 
-The result is a practical starting point for `PC -> RP2040 -> NINA -> Switch`, but it is still a starter and not a finished Switch-compatible controller. The hard Switch-specific work is still ahead of us: descriptor fidelity, subcommand replies, controller identity, pairing persistence, and calibration/IMU behavior.
+The result is a practical starting point for `PC -> RP2040 -> NINA -> Switch`. The repo has now moved past the original generic HID placeholder into a `Left Joy-Con`-first scaffold, but it is still not a finished Switch-compatible controller.
 
 ## Layout
 
@@ -28,14 +28,15 @@ The result is a practical starting point for `PC -> RP2040 -> NINA -> Switch`, b
 
 - A binary bridge protocol with CRC checks.
 - A USB serial entry point for PC control.
-- A NINA-side Bluetooth Classic HID starter built around `esp_hidd`.
-- Periodic HID report generation from controller state received over UART.
+- A NINA-side Bluetooth Classic HID app built around `esp_hidd`.
+- A `Left Joy-Con`-style Bluetooth HID identity with Joy-Con report IDs.
+- Periodic `0x30`-style input report generation from controller state received over UART.
+- Basic `0x21` subcommand replies for device info, report mode, SPI reads, player lights, IMU enable, vibration enable, and voltage queries.
 
 ## What Is Still Missing For Real Switch Support
 
-- Switch-specific Bluetooth HID descriptor and SDP tuning.
-- Handling of Switch output reports such as subcommands and rumble.
-- Proper `0x21` and `0x30` report behavior instead of the starter generic gamepad report.
+- Verification that the current Left Joy-Con scaffold is accepted by a real Switch.
+- Any additional output reports or subcommands the Switch still insists on during pairing or reconnection.
 - Pairing/bond persistence and device identity behavior that matches a Joy-Con or Pro Controller.
 - Optional IMU, player LEDs, and rumble translation.
 
@@ -43,14 +44,17 @@ Use this repo as the first clean implementation boundary, not as the last mile.
 
 ## Current Status
 
-As of `2026-04-19`, the transport and generic Bluetooth HID bring-up is working:
+As of `2026-04-19`, the transport bring-up is working and the NINA firmware now contains a first Left Joy-Con scaffold:
 
 - The `RP2040` bridge sketch uploads and runs.
 - The `NINA` firmware builds and flashes through `SerialNINAPassthrough`.
 - `PC -> RP2040 -> NINA` framed status requests work.
-- The NINA advertises as `Nano Switch Starter`.
-- Pairing to a host works with the current generic HID placeholder.
+- The NINA advertises as `Joy-Con (L)`.
+- Pairing to a host works.
+- The HID layer now responds to common Joy-Con subcommands and emits Switch-style reports.
 
-The project is not yet Switch-compatible. The next phase is to replace the generic HID logic in `nina_firmware/main/switch_hid.c` with Switch-style `0x21` subcommand replies and `0x30` input reports.
+The project is still not confirmed Switch-compatible. The next phase is hardware validation against a real Switch and then tightening whatever probe/reply details the console still rejects.
+
+The most recent real-Switch test got through Bluetooth authentication and bonding, but the connection still dropped before any HID report exchange. In practice, that means the remaining blocker likely sits in the stock `esp_hidd` / SDP identity path, not only in the later Joy-Con subcommand replies. Existing ESP32 Switch-controller projects consistently point at a custom `esp-idf` fork for this layer, so keep that in mind before spending too long polishing app-layer behavior alone.
 
 See `docs/bringup-status.md` before resuming work.

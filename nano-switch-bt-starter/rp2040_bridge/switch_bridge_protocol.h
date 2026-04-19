@@ -25,6 +25,7 @@ typedef enum {
   SB_MSG_STATUS = 0x03,
   SB_MSG_SET_STATE = 0x10,
   SB_MSG_VIRTUAL_CABLE_UNPLUG = 0x11,
+  SB_MSG_CLEAR_BONDS = 0x12,
 } sb_message_type_t;
 
 typedef enum {
@@ -40,6 +41,25 @@ typedef enum {
   SB_STATUS_FLAG_CONNECTED = 1u << 3,
   SB_STATUS_FLAG_VIRTUAL_CABLE = 1u << 4,
 } sb_status_flag_bits_t;
+
+typedef enum {
+  SB_BTN_LJC_DOWN = 1u << 0,
+  SB_BTN_LJC_UP = 1u << 1,
+  SB_BTN_LJC_RIGHT = 1u << 2,
+  SB_BTN_LJC_LEFT = 1u << 3,
+  SB_BTN_LJC_SL = 1u << 4,
+  SB_BTN_LJC_SR = 1u << 5,
+  SB_BTN_LJC_L = 1u << 6,
+  SB_BTN_LJC_ZL = 1u << 7,
+  SB_BTN_LJC_MINUS = 1u << 8,
+  SB_BTN_LJC_STICK = 1u << 9,
+  SB_BTN_LJC_CAPTURE = 1u << 10,
+} sb_left_joycon_button_bits_t;
+
+typedef enum {
+  SB_MISC_CHARGING = 1u << 0,
+  SB_MISC_CHARGING_GRIP = 1u << 1,
+} sb_misc_flag_bits_t;
 
 typedef struct SB_PACKED {
   uint8_t magic0;
@@ -77,7 +97,16 @@ typedef struct SB_PACKED {
   uint8_t battery_level;
   uint8_t last_host_report_id;
   uint8_t last_error;
-  uint16_t reserved;
+  uint8_t last_subcommand;
+  uint8_t last_hid_event;
+  uint8_t last_hid_status;
+  uint8_t last_hid_conn_status;
+  uint8_t last_hid_report_type;
+  uint8_t last_hid_report_id;
+  uint8_t last_gap_event;
+  uint8_t last_gap_status;
+  uint8_t last_gap_reason;
+  uint8_t bond_device_count;
 } sb_status_payload_t;
 
 typedef struct SB_PACKED {
