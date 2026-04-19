@@ -1,6 +1,6 @@
 #include <Arduino.h>
 
-#include "../shared/include/switch_bridge_protocol.h"
+#include "switch_bridge_protocol.h"
 
 #if !defined(ARDUINO_NANO_RP2040_CONNECT)
 #error This sketch targets the Arduino Nano RP2040 Connect.
@@ -9,6 +9,27 @@
 static constexpr uint32_t kUsbBaud = 115200;
 static constexpr uint32_t kNinaBaud = 921600;
 static constexpr uint32_t kHelloPeriodMs = 1500;
+static constexpr uint32_t kUsbStartupDelayMs = 400;
+static constexpr uint32_t kNinaResetLowMs = 50;
+static constexpr uint32_t kNinaBootDelayMs = 300;
+
+#define NINA_SERIAL SerialNina
+
+class FrameDecoder;
+
+static void BootNinaIntoApplicationMode() {
+  pinMode(NINA_GPIO0, OUTPUT);
+  pinMode(NINA_RESETN, OUTPUT);
+
+  // Keep GPIO0 deasserted so the ESP32 boots the flashed app, not ROM download mode.
+  digitalWrite(NINA_GPIO0, HIGH);
+
+  // Pulse reset low, then release to boot the NINA firmware cleanly.
+  digitalWrite(NINA_RESETN, LOW);
+  delay(kNinaResetLowMs);
+  digitalWrite(NINA_RESETN, HIGH);
+  delay(kNinaBootDelayMs);
+}
 
 class FrameDecoder {
  public:
@@ -101,7 +122,7 @@ static void SendHelloToNina() {
                        g_sequence_to_nina++,
                        &hello,
                        sizeof(hello))) {
-    WriteFrame(SerialHCI, frame);
+    WriteFrame(NINA_SERIAL, frame);
   }
 }
 
@@ -134,16 +155,18 @@ void setup() {
   digitalWrite(LED_BUILTIN, LOW);
 
   Serial.begin(kUsbBaud);
-  SerialHCI.begin(kNinaBaud);
+  delay(kUsbStartupDelayMs);
 
-  delay(300);
+  BootNinaIntoApplicationMode();
+  NINA_SERIAL.begin(kNinaBaud);
+
   SendHelloToNina();
   g_last_hello_ms = millis();
 }
 
 void loop() {
-  PumpFrames(Serial, SerialHCI, g_usb_decoder, true);
-  PumpFrames(SerialHCI, Serial, g_nina_decoder, false);
+  PumpFrames(Serial, NINA_SERIAL, g_usb_decoder, true);
+  PumpFrames(NINA_SERIAL, Serial, g_nina_decoder, false);
 
   const uint32_t now = millis();
   if ((now - g_last_hello_ms) >= kHelloPeriodMs) {

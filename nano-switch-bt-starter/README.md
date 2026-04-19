@@ -21,6 +21,8 @@ The result is a practical starting point for `PC -> RP2040 -> NINA -> Switch`, b
   Wiring, protocol, and implementation notes.
 - `docs/building.md`
   Flash order and build steps.
+- `docs/bringup-status.md`
+  A concise handoff log of what has been built, flashed, tested, fixed, and what remains.
 
 ## What Works In This Scaffold
 
@@ -38,3 +40,17 @@ The result is a practical starting point for `PC -> RP2040 -> NINA -> Switch`, b
 - Optional IMU, player LEDs, and rumble translation.
 
 Use this repo as the first clean implementation boundary, not as the last mile.
+
+## Current Status
+
+As of `2026-04-19`, the transport and generic Bluetooth HID bring-up is working:
+
+- The `RP2040` bridge sketch uploads and runs.
+- The `NINA` firmware builds and flashes through `SerialNINAPassthrough`.
+- `PC -> RP2040 -> NINA` framed status requests work.
+- The NINA advertises as `Nano Switch Starter`.
+- Pairing to a host works with the current generic HID placeholder.
+
+The project is not yet Switch-compatible. The next phase is to replace the generic HID logic in `nina_firmware/main/switch_hid.c` with Switch-style `0x21` subcommand replies and `0x30` input reports.
+
+See `docs/bringup-status.md` before resuming work.

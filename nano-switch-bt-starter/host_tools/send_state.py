@@ -60,12 +60,23 @@ def state_payload(args: argparse.Namespace) -> bytes:
     )
 
 
-def read_reply(port: serial.Serial) -> None:
-    time.sleep(0.1)
-    waiting = port.in_waiting
-    if waiting:
-        data = port.read(waiting)
+def read_reply(port: serial.Serial, total_wait_s: float = 1.0) -> None:
+    deadline = time.time() + total_wait_s
+    chunks = []
+
+    while time.time() < deadline:
+        waiting = port.in_waiting
+        if waiting:
+            chunks.append(port.read(waiting))
+            time.sleep(0.05)
+            continue
+        time.sleep(0.05)
+
+    if chunks:
+        data = b"".join(chunks)
         print(data.hex(" "))
+    else:
+        print("No reply received.")
 
 
 def main() -> int:
@@ -109,6 +120,8 @@ def main() -> int:
     frame = build_frame(message_type, 1, payload)
 
     with serial.Serial(args.port, args.baud, timeout=0.2) as port:
+        time.sleep(1.0)
+        port.reset_input_buffer()
         port.write(frame)
         port.flush()
         read_reply(port)

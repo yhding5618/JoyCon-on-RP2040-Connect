@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 
 static const char *kLocalName = "Nano Switch Starter";
+static const uint8_t kPeripheralMinorClassGeneric = 0x00;
 
 static const uint8_t kStarterGamepadDescriptor[] = {
     0x05, 0x01,        0x09, 0x05,        0xA1, 0x01,        0x85, 0x01,
@@ -97,7 +98,7 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
       if (param->register_app.status == ESP_HIDD_SUCCESS) {
         esp_bt_cod_t cod = {
             .major = ESP_BT_COD_MAJOR_DEV_PERIPHERAL,
-            .minor = ESP_BT_COD_MINOR_PERIPHERAL_COMBO,
+            .minor = kPeripheralMinorClassGeneric,
             .service = ESP_BT_COD_SRVC_RENDERING,
             .reserved_2 = 0,
             .reserved_8 = 0,
@@ -108,7 +109,7 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
           s_status.flags |= SB_STATUS_FLAG_VIRTUAL_CABLE;
         }
 
-        esp_bt_gap_set_device_name(kLocalName);
+        esp_bt_dev_set_device_name(kLocalName);
         esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
         esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
       } else {
