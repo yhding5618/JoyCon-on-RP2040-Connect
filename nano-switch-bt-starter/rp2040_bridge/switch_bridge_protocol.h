@@ -69,10 +69,11 @@ typedef enum {
   SB_EVENT_SOURCE_GAP_CALLBACK = 0x02,
   SB_EVENT_SOURCE_HID_API = 0x03,
   SB_EVENT_SOURCE_BRIDGE = 0x04,
+  SB_EVENT_SOURCE_BT_IDENTITY = 0x05,
 } sb_event_source_t;
 
 #define SB_EVENT_DUMP_MAX_ENTRIES 5u
-#define SB_EVENT_LOG_MAX_ENTRIES 20u
+#define SB_EVENT_LOG_MAX_ENTRIES 128u
 
 typedef struct SB_PACKED {
   uint8_t magic0;

@@ -9,6 +9,8 @@
 #include "esp_bt_main.h"
 #include "esp_gap_bt_api.h"
 #include "esp_hidd_api.h"
+#include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -56,12 +58,23 @@
 #define SWITCH_SUBCOMMAND_REPLY_BYTES 48u
 #define SWITCH_STANDARD_REPORT_BYTES 48u
 #define SWITCH_SIMPLE_REPORT_BYTES 11u
+#define SWITCH_DEVICE_INFO_REPLY_BYTES 12u
 #define SWITCH_SPI_READ_MAX_BYTES 0x1Du
 #define SWITCH_MAX_BOND_DEVICES 16
 #define SWITCH_EVENT_RING_SIZE SB_EVENT_LOG_MAX_ENTRIES
 
 #define SWITCH_HID_STATUS_SUCCESS 0x00u
 #define SWITCH_HID_STATUS_ERROR 0x01u
+
+#define SWITCH_HID_USE_JOYCONTROL_DESCRIPTOR 1
+
+#if defined(__GNUC__)
+#define SWITCH_HID_MAYBE_UNUSED __attribute__((unused))
+#else
+#define SWITCH_HID_MAYBE_UNUSED
+#endif
+
+static const char *TAG = "switch_hid";
 
 typedef enum {
   SWITCH_HID_EVENT_INIT = 0x00u,
@@ -90,12 +103,40 @@ typedef enum {
   SWITCH_HID_API_EVENT_REMOVE_BOND = 0x07u,
 } switch_hid_api_event_t;
 
+typedef enum {
+  SWITCH_BT_IDENTITY_STAGE_AFTER_BASE_MAC = 0x01u,
+  SWITCH_BT_IDENTITY_STAGE_AFTER_CONTROLLER_INIT = 0x02u,
+  SWITCH_BT_IDENTITY_STAGE_AFTER_BLUEDROID_ENABLE = 0x03u,
+  SWITCH_BT_IDENTITY_STAGE_AFTER_REGISTER_APP_EVT = 0x04u,
+  SWITCH_BT_IDENTITY_STAGE_AFTER_GAP_IDENTITY = 0x05u,
+  SWITCH_BT_IDENTITY_STAGE_AFTER_GAP_IDENTITY_SETTLED = 0x06u,
+} switch_bt_identity_stage_t;
+
+typedef enum {
+  SWITCH_BT_IDENTITY_EVENT_STAGE = 0x01u,
+  SWITCH_BT_IDENTITY_EVENT_BT_ADDR_0_1 = 0x02u,
+  SWITCH_BT_IDENTITY_EVENT_BT_ADDR_2_3 = 0x03u,
+  SWITCH_BT_IDENTITY_EVENT_BT_ADDR_4_5 = 0x04u,
+  SWITCH_BT_IDENTITY_EVENT_BASE_MAC_0_1 = 0x05u,
+  SWITCH_BT_IDENTITY_EVENT_BASE_MAC_2_3 = 0x06u,
+  SWITCH_BT_IDENTITY_EVENT_BASE_MAC_4_5 = 0x07u,
+  SWITCH_BT_IDENTITY_EVENT_COD_STATUS = 0x08u,
+  SWITCH_BT_IDENTITY_EVENT_COD_MAJOR_MINOR = 0x09u,
+  SWITCH_BT_IDENTITY_EVENT_COD_SERVICE = 0x0Au,
+  SWITCH_BT_IDENTITY_EVENT_HID_SUBCLASS_DESC_LO = 0x0Bu,
+  SWITCH_BT_IDENTITY_EVENT_HID_DESC_HI_NAME_LEN = 0x0Cu,
+  SWITCH_BT_IDENTITY_EVENT_HID_STRING_LENGTHS = 0x0Du,
+  SWITCH_BT_IDENTITY_EVENT_HID_PROVIDER_LENGTH = 0x0Eu,
+  SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_0 = 0x0Fu,
+  SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_1 = 0x10u,
+} switch_bt_identity_event_t;
+
 static const char *kLocalName = "Joy-Con (L)";
 static const uint8_t kPeripheralMinorClassGamepad = 0x02;
 static const uint8_t kNintendoBaseMacPrefix[3] = {0xD4u, 0xF0u, 0x57u};
 static const uint8_t kJoyConSdpSubclass = 0x08u;
 
-static const uint8_t kSwitchJoyConDescriptor[] = {
+static const uint8_t kCurrentDescriptor[] SWITCH_HID_MAYBE_UNUSED = {
     0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x06, 0x01, 0xFF, 0x85, 0x21, 0x09, 0x21, 0x75,
     0x08, 0x95, 0x30, 0x81, 0x02, 0x85, 0x30, 0x09, 0x30, 0x75, 0x08, 0x95, 0x30, 0x81,
     0x02, 0x85, 0x31, 0x09, 0x31, 0x75, 0x08, 0x96, 0x69, 0x01, 0x81, 0x02, 0x85, 0x32,
@@ -111,13 +152,50 @@ static const uint8_t kSwitchJoyConDescriptor[] = {
     0x02, 0xC0,
 };
 
+static const uint8_t kJoycontrolDescriptor[] SWITCH_HID_MAYBE_UNUSED = {
+    0x05, 0x01, 0x15, 0x00, 0x09, 0x04, 0xA1, 0x01,
+    0x85, 0x30, 0x05, 0x01, 0x05, 0x09, 0x19, 0x01,
+    0x29, 0x0A, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
+    0x95, 0x0A, 0x55, 0x00, 0x65, 0x00, 0x81, 0x02,
+    0x05, 0x09, 0x19, 0x0B, 0x29, 0x0E, 0x15, 0x00,
+    0x25, 0x01, 0x75, 0x01, 0x95, 0x04, 0x81, 0x02,
+    0x75, 0x01, 0x95, 0x02, 0x81, 0x03, 0x0B, 0x01,
+    0x00, 0x01, 0x00, 0xA1, 0x00, 0x0B, 0x30, 0x00,
+    0x01, 0x00, 0x0B, 0x31, 0x00, 0x01, 0x00, 0x0B,
+    0x32, 0x00, 0x01, 0x00, 0x0B, 0x35, 0x00, 0x01,
+    0x00, 0x15, 0x00, 0x27, 0xFF, 0xFF, 0x00, 0x00,
+    0x75, 0x10, 0x95, 0x04, 0x81, 0x02, 0xC0, 0x0B,
+    0x39, 0x00, 0x01, 0x00, 0x15, 0x00, 0x25, 0x07,
+    0x35, 0x00, 0x46, 0x3B, 0x01, 0x65, 0x14, 0x75,
+    0x04, 0x95, 0x01, 0x81, 0x02, 0x05, 0x09, 0x19,
+    0x0F, 0x29, 0x12, 0x15, 0x00, 0x25, 0x01, 0x75,
+    0x01, 0x95, 0x04, 0x81, 0x02, 0x75, 0x08, 0x95,
+    0x34, 0x81, 0x03, 0x06, 0x00, 0xFF, 0x85, 0x21,
+    0x09, 0x01, 0x75, 0x08, 0x95, 0x3F, 0x81, 0x03,
+    0x85, 0x81, 0x09, 0x02, 0x75, 0x08, 0x95, 0x3F,
+    0x81, 0x03, 0x85, 0x01, 0x09, 0x03, 0x75, 0x08,
+    0x95, 0x3F, 0x91, 0x83, 0x85, 0x10, 0x09, 0x04,
+    0x75, 0x08, 0x95, 0x3F, 0x91, 0x83, 0x85, 0x80,
+    0x09, 0x05, 0x75, 0x08, 0x95, 0x3F, 0x91, 0x83,
+    0x85, 0x82, 0x09, 0x06, 0x75, 0x08, 0x95, 0x3F,
+    0x91, 0x83, 0xC0,
+};
+
+_Static_assert(sizeof(kJoycontrolDescriptor) == 203u, "Unexpected joycontrol descriptor length");
+
+#if SWITCH_HID_USE_JOYCONTROL_DESCRIPTOR
+#define SWITCH_HID_DESCRIPTOR kJoycontrolDescriptor
+#else
+#define SWITCH_HID_DESCRIPTOR kCurrentDescriptor
+#endif
+
 static const esp_hidd_app_param_t kSwitchJoyConApp = {
     .name = "Wireless Gamepad",
     .description = "Gamepad",
     .provider = "Nintendo",
     .subclass = kJoyConSdpSubclass,
-    .desc_list = (uint8_t *)kSwitchJoyConDescriptor,
-    .desc_list_len = sizeof(kSwitchJoyConDescriptor),
+    .desc_list = (uint8_t *)SWITCH_HID_DESCRIPTOR,
+    .desc_list_len = sizeof(SWITCH_HID_DESCRIPTOR),
 };
 
 static const esp_hidd_qos_param_t kQos = {
@@ -173,26 +251,14 @@ static uint8_t s_player_lights = 0;
 static bool s_imu_enabled = false;
 static bool s_vibration_enabled = false;
 static bool s_shipment_low_power = false;
+static uint8_t s_intended_base_mac[6] = {0};
+static bool s_intended_base_mac_valid = false;
 static sb_event_entry_t s_event_ring[SWITCH_EVENT_RING_SIZE];
 static size_t s_event_ring_head = 0u;
 static size_t s_event_ring_count = 0u;
 static uint16_t s_next_event_sequence = 1u;
 static bool s_event_ring_overflowed = false;
 static portMUX_TYPE s_event_ring_lock = portMUX_INITIALIZER_UNLOCKED;
-
-static void configure_gap_identity(void) {
-  esp_bt_cod_t cod = {
-      .major = ESP_BT_COD_MAJOR_DEV_PERIPHERAL,
-      .minor = kPeripheralMinorClassGamepad,
-      .service = ESP_BT_COD_SRVC_LMTD_DISCOVER,
-      .reserved_2 = 0,
-      .reserved_8 = 0,
-  };
-
-  esp_bt_dev_set_device_name(kLocalName);
-  esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
-  esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
-}
 
 static uint32_t monotonic_timestamp_ms(void) {
   return (uint32_t)(esp_timer_get_time() / 1000u);
@@ -220,6 +286,199 @@ static void record_event(uint8_t source, uint8_t event, uint8_t arg0, uint8_t ar
   portEXIT_CRITICAL(&s_event_ring_lock);
 }
 
+static uint8_t bt_identity_stage_id(const char *stage) {
+  if (stage == NULL) {
+    return 0u;
+  }
+  if (strcmp(stage, "after_base_mac") == 0) {
+    return SWITCH_BT_IDENTITY_STAGE_AFTER_BASE_MAC;
+  }
+  if (strcmp(stage, "after_controller_init") == 0) {
+    return SWITCH_BT_IDENTITY_STAGE_AFTER_CONTROLLER_INIT;
+  }
+  if (strcmp(stage, "after_bluedroid_enable") == 0) {
+    return SWITCH_BT_IDENTITY_STAGE_AFTER_BLUEDROID_ENABLE;
+  }
+  if (strcmp(stage, "after_register_app_evt") == 0) {
+    return SWITCH_BT_IDENTITY_STAGE_AFTER_REGISTER_APP_EVT;
+  }
+  if (strcmp(stage, "after_gap_identity") == 0) {
+    return SWITCH_BT_IDENTITY_STAGE_AFTER_GAP_IDENTITY;
+  }
+  if (strcmp(stage, "after_gap_identity_settled") == 0) {
+    return SWITCH_BT_IDENTITY_STAGE_AFTER_GAP_IDENTITY_SETTLED;
+  }
+  return 0u;
+}
+
+static uint8_t clamp_size_to_u8(size_t value) {
+  return value > 0xFFu ? 0xFFu : (uint8_t)value;
+}
+
+static void log_bt_identity(const char *stage) {
+  uint8_t bt_address[6] = {0};
+  uint8_t base_mac[6] = {0};
+  esp_bt_cod_t cod = {0};
+  uint8_t identity_flags = 0u;
+  const uint8_t *address = esp_bt_dev_get_address();
+  const esp_bluedroid_status_t bluedroid_status = esp_bluedroid_get_status();
+  esp_err_t cod_err = ESP_ERR_INVALID_STATE;
+  const uint16_t descriptor_len = (uint16_t)kSwitchJoyConApp.desc_list_len;
+
+  if (address != NULL) {
+    memcpy(bt_address, address, sizeof(bt_address));
+    identity_flags |= 0x01u;
+    if (memcmp(bt_address, kNintendoBaseMacPrefix, sizeof(kNintendoBaseMacPrefix)) == 0) {
+      identity_flags |= 0x08u;
+    }
+  }
+
+  if (s_intended_base_mac_valid) {
+    memcpy(base_mac, s_intended_base_mac, sizeof(base_mac));
+    identity_flags |= 0x02u;
+    if (memcmp(base_mac, kNintendoBaseMacPrefix, sizeof(kNintendoBaseMacPrefix)) == 0) {
+      identity_flags |= 0x10u;
+    }
+  }
+
+  if (bluedroid_status == ESP_BLUEDROID_STATUS_ENABLED) {
+    cod_err = esp_bt_gap_get_cod(&cod);
+    if (cod_err == ESP_OK) {
+      identity_flags |= 0x04u;
+    }
+  }
+
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_STAGE,
+               bt_identity_stage_id(stage),
+               identity_flags);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_BT_ADDR_0_1,
+               bt_address[0],
+               bt_address[1]);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_BT_ADDR_2_3,
+               bt_address[2],
+               bt_address[3]);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_BT_ADDR_4_5,
+               bt_address[4],
+               bt_address[5]);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_BASE_MAC_0_1,
+               base_mac[0],
+               base_mac[1]);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_BASE_MAC_2_3,
+               base_mac[2],
+               base_mac[3]);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_BASE_MAC_4_5,
+               base_mac[4],
+               base_mac[5]);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_COD_STATUS,
+               (uint8_t)cod_err,
+               (uint8_t)bluedroid_status);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_COD_MAJOR_MINOR,
+               (uint8_t)cod.major,
+               (uint8_t)cod.minor);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_COD_SERVICE,
+               (uint8_t)(cod.service & 0xFFu),
+               (uint8_t)((cod.service >> 8) & 0xFFu));
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_HID_SUBCLASS_DESC_LO,
+               (uint8_t)kSwitchJoyConApp.subclass,
+               (uint8_t)(descriptor_len & 0xFFu));
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_HID_DESC_HI_NAME_LEN,
+               (uint8_t)((descriptor_len >> 8) & 0xFFu),
+               clamp_size_to_u8(strlen(kLocalName)));
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_HID_STRING_LENGTHS,
+               clamp_size_to_u8(strlen(kSwitchJoyConApp.name)),
+               clamp_size_to_u8(strlen(kSwitchJoyConApp.description)));
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_HID_PROVIDER_LENGTH,
+               clamp_size_to_u8(strlen(kSwitchJoyConApp.provider)),
+               0u);
+
+  ESP_LOGI(TAG,
+           "BT_IDENTITY stage=%s bt_addr=%02X:%02X:%02X:%02X:%02X:%02X "
+           "intended_base_mac=%02X:%02X:%02X:%02X:%02X:%02X "
+           "gap_name=\"%s\" cod_err=0x%02X cod_major=0x%02X cod_minor=0x%02X "
+           "cod_service=0x%03X hid_service=\"%s\" description=\"%s\" provider=\"%s\" "
+           "hid_subclass=0x%02X descriptor_len=%u",
+           stage != NULL ? stage : "unknown",
+           bt_address[0],
+           bt_address[1],
+           bt_address[2],
+           bt_address[3],
+           bt_address[4],
+           bt_address[5],
+           base_mac[0],
+           base_mac[1],
+           base_mac[2],
+           base_mac[3],
+           base_mac[4],
+           base_mac[5],
+           kLocalName,
+           (unsigned int)cod_err,
+           (unsigned int)cod.major,
+           (unsigned int)cod.minor,
+           (unsigned int)cod.service,
+           kSwitchJoyConApp.name,
+           kSwitchJoyConApp.description,
+           kSwitchJoyConApp.provider,
+           (unsigned int)kSwitchJoyConApp.subclass,
+           (unsigned int)descriptor_len);
+}
+
+static void delayed_bt_identity_log_task(void *arg) {
+  (void)arg;
+  vTaskDelay(pdMS_TO_TICKS(500));
+  log_bt_identity("after_gap_identity_settled");
+  vTaskDelete(NULL);
+}
+
+static void schedule_delayed_bt_identity_log(void) {
+  (void)xTaskCreate(delayed_bt_identity_log_task,
+                    "bt_id_log",
+                    2048,
+                    NULL,
+                    tskIDLE_PRIORITY + 1u,
+                    NULL);
+}
+
+static void configure_gap_identity(void) {
+  esp_bt_cod_t cod = {
+      .major = ESP_BT_COD_MAJOR_DEV_PERIPHERAL,
+      .minor = kPeripheralMinorClassGamepad,
+      .service = ESP_BT_COD_SRVC_LMTD_DISCOVER,
+      .reserved_2 = 0,
+      .reserved_8 = 0,
+  };
+  esp_err_t name_err = ESP_OK;
+  esp_err_t cod_err = ESP_OK;
+  esp_err_t scan_err = ESP_OK;
+
+  name_err = esp_bt_dev_set_device_name(kLocalName);
+  cod_err = esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
+  scan_err = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_0,
+               (uint8_t)name_err,
+               (uint8_t)cod_err);
+  record_event(SB_EVENT_SOURCE_BT_IDENTITY,
+               SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_1,
+               (uint8_t)scan_err,
+               0u);
+  log_bt_identity("after_gap_identity");
+  schedule_delayed_bt_identity_log();
+}
+
 static void note_hid_api_error(uint8_t event, uint8_t status) {
   s_status.last_hid_event = event;
   s_status.last_hid_status = status;
@@ -232,6 +491,8 @@ static void note_hid_connection_open(uint8_t status, uint8_t conn_status) {
   s_status.last_hid_conn_status = conn_status;
   if (status != SWITCH_HID_STATUS_SUCCESS) {
     s_status.last_error = status;
+  } else if (conn_status != (uint8_t)ESP_HIDD_CONN_STATE_CONNECTED) {
+    s_status.last_error = conn_status;
   }
   if (status == SWITCH_HID_STATUS_SUCCESS &&
       conn_status == (uint8_t)ESP_HIDD_CONN_STATE_CONNECTED) {
@@ -286,6 +547,8 @@ static esp_err_t configure_nintendo_like_base_mac(void) {
 
   memcpy(base_mac, efuse_mac, sizeof(base_mac));
   memcpy(base_mac, kNintendoBaseMacPrefix, sizeof(kNintendoBaseMacPrefix));
+  memcpy(s_intended_base_mac, base_mac, sizeof(s_intended_base_mac));
+  s_intended_base_mac_valid = true;
   return esp_base_mac_addr_set(base_mac);
 }
 
@@ -587,18 +850,19 @@ static esp_err_t send_subcommand_reply(uint8_t ack,
       ESP_HIDD_REPORT_TYPE_INTRDATA, SWITCH_REPORT_SUBCOMMAND_REPLY, sizeof(report), report);
 }
 
-static void build_device_info_reply(uint8_t reply[11]) {
+static void build_device_info_reply(uint8_t reply[SWITCH_DEVICE_INFO_REPLY_BYTES]) {
   uint8_t address_be[6];
 
   copy_bt_address_be(address_be);
 
-  memset(reply, 0, 11u);
+  memset(reply, 0, SWITCH_DEVICE_INFO_REPLY_BYTES);
   reply[0] = 0x04u;
   reply[1] = 0x00u;
   reply[2] = SWITCH_CONTROLLER_TYPE_LEFT_JOYCON;
   reply[3] = 0x02u;
   memcpy(&reply[4], address_be, sizeof(address_be));
   reply[10] = 0x01u;
+  reply[11] = 0x01u;
 }
 
 static void reply_spi_flash_read(const uint8_t *args, size_t args_len) {
@@ -660,7 +924,8 @@ static void handle_subcommand(uint8_t subcommand, const uint8_t *args, size_t ar
 
     case SWITCH_SUBCMD_GET_DEVICE_INFO:
       build_device_info_reply(reply);
-      (void)send_subcommand_reply(SWITCH_ACK_DEVICE_INFO, subcommand, reply, 11u);
+      (void)send_subcommand_reply(
+          SWITCH_ACK_DEVICE_INFO, subcommand, reply, SWITCH_DEVICE_INFO_REPLY_BYTES);
       break;
 
     case SWITCH_SUBCMD_SET_INPUT_REPORT_MODE:
@@ -882,6 +1147,7 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
                    (uint8_t)event,
                    (uint8_t)param->register_app.status,
                    param->register_app.in_use ? 1u : 0u);
+      log_bt_identity("after_register_app_evt");
       s_status.last_hid_status = (uint8_t)param->register_app.status;
       if (param->register_app.status == ESP_HIDD_SUCCESS) {
         s_status.flags |= SB_STATUS_FLAG_HID_READY | SB_STATUS_FLAG_BT_READY;
@@ -1007,6 +1273,7 @@ esp_err_t switch_hid_init(void) {
   if (err != ESP_OK) {
     return err;
   }
+  log_bt_identity("after_base_mac");
 
   {
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
@@ -1015,6 +1282,7 @@ esp_err_t switch_hid_init(void) {
   if (err != ESP_OK) {
     return err;
   }
+  log_bt_identity("after_controller_init");
 
   err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
   if (err != ESP_OK) {
@@ -1030,6 +1298,7 @@ esp_err_t switch_hid_init(void) {
   if (err != ESP_OK) {
     return err;
   }
+  log_bt_identity("after_bluedroid_enable");
 
   err = esp_bt_gap_register_callback(gap_callback);
   if (err != ESP_OK) {

@@ -92,6 +92,23 @@ The NINA app uses `UART0` for the RP2040 link because the board wiring routes NI
 
 If your local ESP-IDF configuration still emits console logs on `UART0`, change it in `menuconfig` before final testing.
 
+## Switch HID SDP Compatibility Patch
+
+The 203-byte Joy-Con HID descriptor does not fit in stock ESP-IDF v4.4.8's default per-record SDP pad once the other HID attributes are present. Stock ESP-IDF also advertises HID country code `0x21`, while the Joy-Con reference SDP uses `0x00`.
+
+Before testing the Joy-Con descriptor build against the Switch, patch the local ESP-IDF tree:
+
+```powershell
+pwsh host_tools\patch_idf_hid_switch_compat.ps1 -IdfPath C:\Espressif\frameworks\esp-idf-v4.4.8
+```
+
+Then rebuild the NINA firmware with a clean BT component rebuild:
+
+```powershell
+idf.py fullclean
+idf.py build
+```
+
 ## Recommended Next Milestones
 
 1. Confirm the PC can send `SET_STATE` and the NINA can reply with `STATUS`.

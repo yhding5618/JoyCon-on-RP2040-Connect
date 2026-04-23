@@ -19,6 +19,20 @@ MSG_CLEAR_BONDS = 0x12
 HEADER_SIZE = 8
 EVENT_PAYLOAD_SIZE = 48
 
+BUTTON_NAMES = {
+    "down": 1 << 0,
+    "up": 1 << 1,
+    "right": 1 << 2,
+    "left": 1 << 3,
+    "sl": 1 << 4,
+    "sr": 1 << 5,
+    "l": 1 << 6,
+    "zl": 1 << 7,
+    "minus": 1 << 8,
+    "stick": 1 << 9,
+    "capture": 1 << 10,
+}
+
 FLAG_BRIDGE_READY = 1 << 0
 FLAG_BT_READY = 1 << 1
 FLAG_HID_READY = 1 << 2
@@ -31,6 +45,7 @@ EVENT_SOURCE_NAMES = {
     0x02: "GAP_CALLBACK",
     0x03: "HID_API",
     0x04: "BRIDGE",
+    0x05: "BT_IDENTITY",
 }
 
 HID_EVENT_NAMES = {
@@ -85,6 +100,51 @@ BRIDGE_EVENT_NAMES = {
     MSG_GET_EVENTS: "GET_EVENTS",
     MSG_VC_UNPLUG: "VIRTUAL_CABLE_UNPLUG",
     MSG_CLEAR_BONDS: "CLEAR_BONDS",
+}
+
+BT_IDENTITY_EVENT_NAMES = {
+    0x01: "STAGE",
+    0x02: "BT_ADDR_0_1",
+    0x03: "BT_ADDR_2_3",
+    0x04: "BT_ADDR_4_5",
+    0x05: "BASE_MAC_0_1",
+    0x06: "BASE_MAC_2_3",
+    0x07: "BASE_MAC_4_5",
+    0x08: "COD_STATUS",
+    0x09: "COD_MAJOR_MINOR",
+    0x0A: "COD_SERVICE",
+    0x0B: "HID_SUBCLASS_DESC_LO",
+    0x0C: "HID_DESC_HI_NAME_LEN",
+    0x0D: "HID_STRING_LENGTHS",
+    0x0E: "HID_PROVIDER_LENGTH",
+    0x0F: "GAP_IDENTITY_API_0",
+    0x10: "GAP_IDENTITY_API_1",
+}
+
+BT_IDENTITY_STAGE_NAMES = {
+    0x01: "after_base_mac",
+    0x02: "after_controller_init",
+    0x03: "after_bluedroid_enable",
+    0x04: "after_register_app_evt",
+    0x05: "after_gap_identity",
+    0x06: "after_gap_identity_settled",
+}
+
+HID_PSM_NAMES = {
+    0x11: "CTRL",
+    0x13: "INTR",
+}
+
+HID_CONN_STATE_NAMES = {
+    0x00: "UNUSED",
+    0x01: "CONNECTING_CTRL",
+    0x02: "CONNECTING_INTR",
+    0x03: "CONFIG",
+    0x04: "CONNECTED",
+    0x05: "DISCONNECTING",
+    0x06: "SECURITY",
+    0x07: "DISCONNECTING_CTRL",
+    0x08: "DISCONNECTING_INTR",
 }
 
 
@@ -159,6 +219,10 @@ def describe_event(source: int, event: int, arg0: int, arg1: int) -> tuple[str, 
         name = HID_EVENT_NAMES.get(event, f"0x{event:02x}")
         if event in (0x00, 0x02, 0x07):
             return name, f"status=0x{arg0:02x}"
+        if event == 0x04 and arg0 in HID_PSM_NAMES:
+            psm = HID_PSM_NAMES[arg0]
+            state = HID_CONN_STATE_NAMES.get(arg1, f"0x{arg1:02x}")
+            return name, f"status=0x{arg0:02x} conn=0x{arg1:02x} psm={psm} close_state={state}"
         if event in (0x04, 0x05, 0x0C):
             return name, f"status=0x{arg0:02x} conn=0x{arg1:02x}"
         if event == 0x06:
@@ -203,6 +267,54 @@ def describe_event(source: int, event: int, arg0: int, arg1: int) -> tuple[str, 
 
     if source == 0x04:
         name = BRIDGE_EVENT_NAMES.get(event, f"0x{event:02x}")
+        return name, f"arg0=0x{arg0:02x} arg1=0x{arg1:02x}"
+
+    if source == 0x05:
+        name = BT_IDENTITY_EVENT_NAMES.get(event, f"0x{event:02x}")
+        if event == 0x01:
+            flags = []
+            if arg1 & 0x01:
+                flags.append("bt_addr")
+            if arg1 & 0x02:
+                flags.append("base_mac")
+            if arg1 & 0x04:
+                flags.append("cod")
+            if arg1 & 0x08:
+                flags.append("bt_addr_nintendo_prefix")
+            if arg1 & 0x10:
+                flags.append("base_mac_nintendo_prefix")
+            flag_text = "|".join(flags) or "none"
+            stage = BT_IDENTITY_STAGE_NAMES.get(arg0, f"0x{arg0:02x}")
+            return name, f"stage={stage} flags={flag_text}"
+        if event in (0x02, 0x03, 0x04):
+            return name, f"bytes={arg0:02x}:{arg1:02x}"
+        if event in (0x05, 0x06, 0x07):
+            return name, f"bytes={arg0:02x}:{arg1:02x}"
+        if event == 0x08:
+            return name, f"cod_err=0x{arg0:02x} bluedroid_status=0x{arg1:02x}"
+        if event == 0x09:
+            return name, f"major=0x{arg0:02x} minor=0x{arg1:02x}"
+        if event == 0x0A:
+            service = arg0 | (arg1 << 8)
+            return name, f"service=0x{service:03x}"
+        if event == 0x0B:
+            return name, f"hid_subclass=0x{arg0:02x} desc_len_low=0x{arg1:02x}"
+        if event == 0x0C:
+            return name, (
+                f'desc_len_high=0x{arg0:02x} gap_name="Joy-Con (L)" '
+                f"gap_name_len={arg1}"
+            )
+        if event == 0x0D:
+            return name, (
+                f'hid_service="Wireless Gamepad" hid_service_len={arg0} '
+                f'description="Gamepad" description_len={arg1}'
+            )
+        if event == 0x0E:
+            return name, f'provider="Nintendo" provider_len={arg0}'
+        if event == 0x0F:
+            return name, f"set_name_err=0x{arg0:02x} set_cod_err=0x{arg1:02x}"
+        if event == 0x10:
+            return name, f"set_scan_mode_err=0x{arg0:02x}"
         return name, f"arg0=0x{arg0:02x} arg1=0x{arg1:02x}"
 
     return f"0x{event:02x}", f"arg0=0x{arg0:02x} arg1=0x{arg1:02x}"
@@ -350,16 +462,39 @@ def decode_events_frame(frame: bytes) -> list[str] | None:
 
 
 def state_payload(args: argparse.Namespace) -> bytes:
+    return build_state_payload(
+        buttons=args.buttons,
+        lx=args.lx,
+        ly=args.ly,
+        rx=args.rx,
+        ry=args.ry,
+        hat=args.hat,
+        misc=args.misc,
+        battery=args.battery,
+    )
+
+
+def build_state_payload(
+    *,
+    buttons: int,
+    lx: int = 0,
+    ly: int = 0,
+    rx: int = 0,
+    ry: int = 0,
+    hat: int = 8,
+    misc: int = 0,
+    battery: int = 8,
+) -> bytes:
     return struct.pack(
         "<IhhhhBBBB",
-        args.buttons,
-        args.lx,
-        args.ly,
-        args.rx,
-        args.ry,
-        args.hat,
-        args.misc,
-        args.battery,
+        buttons,
+        lx,
+        ly,
+        rx,
+        ry,
+        hat,
+        misc,
+        battery,
         0,
     )
 
@@ -411,6 +546,13 @@ def main() -> int:
     state.add_argument("--misc", type=int, default=0)
     state.add_argument("--battery", type=int, default=8)
 
+    tap = subparsers.add_parser("tap", help="Press and release one left Joy-Con button.")
+    tap.add_argument("port", help="Serial port, for example COM5.")
+    tap.add_argument("button", choices=sorted(BUTTON_NAMES))
+    tap.add_argument("--baud", type=int, default=115200)
+    tap.add_argument("--duration-ms", type=int, default=250)
+    tap.add_argument("--battery", type=int, default=8)
+
     status = subparsers.add_parser("status", help="Request a status frame.")
     status.add_argument("port", help="Serial port, for example COM5.")
     status.add_argument("--baud", type=int, default=115200)
@@ -432,6 +574,9 @@ def main() -> int:
     if args.command == "state":
         message_type = MSG_SET_STATE
         payload = state_payload(args)
+    elif args.command == "tap":
+        message_type = MSG_SET_STATE
+        payload = build_state_payload(buttons=BUTTON_NAMES[args.button], battery=args.battery)
     elif args.command == "status":
         message_type = MSG_GET_STATUS
         payload = b""
@@ -452,6 +597,15 @@ def main() -> int:
         port.reset_input_buffer()
         port.write(frame)
         port.flush()
+        if args.command == "tap":
+            time.sleep(max(0, args.duration_ms) / 1000.0)
+            release_frame = build_frame(
+                MSG_SET_STATE,
+                1,
+                build_state_payload(buttons=0, battery=args.battery),
+            )
+            port.write(release_frame)
+            port.flush()
         read_reply(port, total_wait_s=1.5 if args.command == "dump-events" else 1.0)
 
     return 0
