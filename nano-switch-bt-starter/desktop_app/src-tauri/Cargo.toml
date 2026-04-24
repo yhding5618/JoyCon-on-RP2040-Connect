@@ -1,0 +1,23 @@
+[package]
+name = "nano-switch-desktop-app"
+version = "0.1.0"
+description = "Desktop app for the RP2040 to NINA Nintendo Switch bridge"
+authors = ["OpenAI Codex"]
+edition = "2021"
+
+[lib]
+name = "nano_switch_desktop_app_lib"
+crate-type = ["cdylib", "rlib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = "4.8"
+tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
+thiserror = "1"
+
+[package.metadata.tauri-winres]
