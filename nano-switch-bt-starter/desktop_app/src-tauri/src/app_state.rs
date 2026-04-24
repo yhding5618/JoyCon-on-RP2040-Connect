@@ -8,7 +8,7 @@ use crate::model::{
     ActiveProfileState, AppStateSnapshot, ConnectionState, DiagnosticsState, LatestInputState,
     SerialSessionState,
 };
-use crate::profiles::default_right_joycon_profile;
+use crate::profiles::default_left_joycon_profile;
 use crate::serial_worker::{SerialWorkerHandle, WorkerCommand, WorkerReply};
 
 const DEFAULT_OUTPUT_RATE_HZ: u16 = 125;
@@ -156,7 +156,7 @@ fn effective_output_rate_hz(output_rate_hz: u16) -> u16 {
 }
 
 fn initial_state() -> AppStateSnapshot {
-    let profile = default_right_joycon_profile();
+    let profile = default_left_joycon_profile();
 
     AppStateSnapshot {
         serial: SerialSessionState {

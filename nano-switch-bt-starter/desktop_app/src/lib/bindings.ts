@@ -1,10 +1,15 @@
-import { defaultInputSnapshot, defaultRightJoyConProfile } from "./defaults";
+import {
+  defaultInputSnapshot,
+  defaultLeftJoyConProfile,
+  defaultProfileForControllerModel,
+} from "./defaults";
 import { invokeTauri } from "./tauri";
 import type { InputSnapshot } from "../models/input";
 import type { AppStateSnapshot } from "../models/ui";
+import type { ControllerModel } from "../models/profile";
 
 const mockStatus = {
-  flags: 0x07,
+  flags: 0x01,
   protocolMode: 0,
   inputReportMode: 0x30,
   batteryLevel: 8,
@@ -25,6 +30,43 @@ const mockStatus = {
   reserved0: 0,
   reserved1: 0,
 };
+
+const controllerModeValues: Record<ControllerModel, number> = {
+  LeftJoyCon: 0,
+  RightJoyCon: 1,
+  ProController: 2,
+};
+
+function controllerModelFromMode(mode: number): ControllerModel {
+  if (mode === 1) {
+    return "RightJoyCon";
+  }
+  if (mode === 2) {
+    return "ProController";
+  }
+  return "LeftJoyCon";
+}
+
+function applyMockStatus(status: typeof mockStatus): void {
+  const profile = defaultProfileForControllerModel(
+    controllerModelFromMode(status.controllerMode),
+  );
+  browserState = {
+    ...browserState,
+    serial: {
+      ...browserState.serial,
+      lastStatus: status,
+    },
+    profile: {
+      activeProfileId: profile.id,
+      activeProfile: profile,
+    },
+    diagnostics: {
+      ...browserState.diagnostics,
+      lastStatus: status,
+    },
+  };
+}
 
 const leftJoyConButtonBits: Record<string, number> = {
   a: 1 << 0,
@@ -66,6 +108,22 @@ const rightJoyConButtonBits: Record<string, number> = {
   capture: 1 << 26,
 };
 
+const proControllerButtonBits: Record<string, number> = {
+  a: rightJoyConButtonBits.a,
+  b: rightJoyConButtonBits.b,
+  x: rightJoyConButtonBits.x,
+  y: rightJoyConButtonBits.y,
+  l: leftJoyConButtonBits.l,
+  r: rightJoyConButtonBits.r,
+  zl: leftJoyConButtonBits.zl,
+  zr: rightJoyConButtonBits.zr,
+  minus: leftJoyConButtonBits.minus,
+  plus: rightJoyConButtonBits.plus,
+  stick: leftJoyConButtonBits.stick,
+  capture: leftJoyConButtonBits.capture,
+  home: rightJoyConButtonBits.home,
+};
+
 let browserState: AppStateSnapshot = {
   serial: {
     availablePorts: [],
@@ -76,8 +134,8 @@ let browserState: AppStateSnapshot = {
     lastStatus: null,
   },
   profile: {
-    activeProfileId: defaultRightJoyConProfile.id,
-    activeProfile: defaultRightJoyConProfile,
+    activeProfileId: defaultLeftJoyConProfile.id,
+    activeProfile: defaultLeftJoyConProfile,
   },
   input: {
     ...defaultInputSnapshot,
@@ -189,6 +247,7 @@ export function connectSerialCommand(
     "connect_serial",
     { port, baud },
     () => {
+      applyMockStatus(mockStatus);
       browserState = {
         ...browserState,
         serial: {
@@ -196,11 +255,9 @@ export function connectSerialCommand(
           selectedPort: port,
           baudRate: baud,
           connectionState: "Connected",
-          lastStatus: mockStatus,
         },
         diagnostics: {
           ...browserState.diagnostics,
-          lastStatus: mockStatus,
           recentLogs: [`Connected to ${port}`, ...browserState.diagnostics.recentLogs].slice(0, 8),
         },
       };
@@ -239,15 +296,11 @@ export function getStatusCommand(): Promise<AppStateSnapshot> {
     "get_status",
     undefined,
     () => {
+      applyMockStatus(browserState.serial.lastStatus ?? mockStatus);
       browserState = {
         ...browserState,
-        serial: {
-          ...browserState.serial,
-          lastStatus: mockStatus,
-        },
         diagnostics: {
           ...browserState.diagnostics,
-          lastStatus: mockStatus,
           lastFrameTx: {
             messageType: 0x02,
             sequence: 1,
@@ -257,7 +310,7 @@ export function getStatusCommand(): Promise<AppStateSnapshot> {
           lastFrameRx: {
             messageType: 0x03,
             sequence: 1,
-            payloadLen: 16,
+            payloadLen: 20,
             crc16: 0,
           },
           recentLogs: ["Status refreshed", ...browserState.diagnostics.recentLogs].slice(0, 8),
@@ -336,17 +389,119 @@ export function clearBondsCommand(): Promise<AppStateSnapshot> {
         serial: {
           ...browserState.serial,
           lastStatus: {
-            ...mockStatus,
+            ...(browserState.serial.lastStatus ?? mockStatus),
             bondDeviceCount: 0,
           },
         },
         diagnostics: {
           ...browserState.diagnostics,
           lastStatus: {
-            ...mockStatus,
+            ...(browserState.serial.lastStatus ?? mockStatus),
             bondDeviceCount: 0,
           },
           recentLogs: ["Clear bonds requested", ...browserState.diagnostics.recentLogs].slice(0, 8),
+        },
+      };
+      return browserState;
+    },
+  );
+}
+
+export function setControllerModeCommand(
+  mode: ControllerModel,
+): Promise<AppStateSnapshot> {
+  return invokeTauri(
+    "set_controller_mode",
+    { mode },
+    () => {
+      const profile = defaultProfileForControllerModel(mode);
+      const status = {
+        ...(browserState.serial.lastStatus ?? mockStatus),
+        controllerMode: controllerModeValues[mode],
+        bluetoothEnabled: 0,
+        flags: (browserState.serial.lastStatus?.flags ?? mockStatus.flags) & ~0x3e,
+      };
+      browserState = {
+        ...browserState,
+        profile: {
+          activeProfileId: profile.id,
+          activeProfile: profile,
+        },
+        input: {
+          ...browserState.input,
+          captureEnabled: false,
+          pressedCodes: [],
+        },
+        controller: {
+          ...browserState.controller,
+          buttons: 0,
+          lx: 0,
+          ly: 0,
+          rx: 0,
+          ry: 0,
+        },
+        serial: {
+          ...browserState.serial,
+          lastStatus: status,
+        },
+        diagnostics: {
+          ...browserState.diagnostics,
+          lastStatus: status,
+          recentLogs: [
+            `Controller mode set to ${mode}`,
+            ...browserState.diagnostics.recentLogs,
+          ].slice(0, 8),
+        },
+      };
+      return browserState;
+    },
+  );
+}
+
+export function setBluetoothEnabledCommand(
+  enabled: boolean,
+): Promise<AppStateSnapshot> {
+  return invokeTauri(
+    "set_bluetooth_enabled",
+    { enabled },
+    () => {
+      const previousStatus = browserState.serial.lastStatus ?? mockStatus;
+      const flags = enabled
+        ? previousStatus.flags | 0x20
+        : previousStatus.flags & ~0x3e;
+      const status = {
+        ...previousStatus,
+        flags,
+        bluetoothEnabled: enabled ? 1 : 0,
+      };
+      browserState = {
+        ...browserState,
+        input: {
+          ...browserState.input,
+          captureEnabled: enabled ? browserState.input.captureEnabled : false,
+          pressedCodes: enabled ? browserState.input.pressedCodes : [],
+        },
+        controller: enabled
+          ? browserState.controller
+          : {
+              ...browserState.controller,
+              buttons: 0,
+              lx: 0,
+              ly: 0,
+              rx: 0,
+              ry: 0,
+            },
+        serial: {
+          ...browserState.serial,
+          lastStatus: status,
+        },
+        diagnostics: {
+          ...browserState.diagnostics,
+          lastStatus: status,
+          recentLogs: [
+            `Bluetooth ${enabled ? "enabled" : "disabled"}`,
+            ...browserState.diagnostics.recentLogs,
+          ].slice(0, 8),
         },
       };
       return browserState;
@@ -362,9 +517,9 @@ export function tapLeftJoyConButtonCommand(
     "tap_left_joycon_button",
     { button, durationMs },
     () => {
-      const bits = browserState.profile.activeProfile.controllerModel === "RightJoyCon"
-        ? rightJoyConButtonBits
-        : leftJoyConButtonBits;
+      const bits = testButtonBitsForControllerModel(
+        browserState.profile.activeProfile.controllerModel,
+      );
 
       browserState = {
         ...browserState,
@@ -398,6 +553,18 @@ export function tapLeftJoyConButtonCommand(
   );
 }
 
+function testButtonBitsForControllerModel(
+  controllerModel: ControllerModel,
+): Record<string, number> {
+  if (controllerModel === "RightJoyCon") {
+    return rightJoyConButtonBits;
+  }
+  if (controllerModel === "ProController") {
+    return proControllerButtonBits;
+  }
+  return leftJoyConButtonBits;
+}
+
 export function pushInputSnapshot(
   snapshot: InputSnapshot,
 ): Promise<AppStateSnapshot> {
@@ -425,6 +592,23 @@ export function pushInputSnapshot(
         if (pressed.has("KeyQ")) buttons |= rightJoyConButtonBits.plus;
         if (pressed.has("ShiftRight")) buttons |= rightJoyConButtonBits.stick;
         if (pressed.has("KeyO")) buttons |= rightJoyConButtonBits.home;
+      } else if (browserState.profile.activeProfile.controllerModel === "ProController") {
+        if (pressed.has("KeyA")) lx -= stickExtent;
+        if (pressed.has("KeyD")) lx += stickExtent;
+        if (pressed.has("KeyS")) ly -= stickExtent;
+        if (pressed.has("KeyW")) ly += stickExtent;
+        if (pressed.has("KeyJ")) buttons |= rightJoyConButtonBits.y;
+        if (pressed.has("KeyI")) buttons |= rightJoyConButtonBits.x;
+        if (pressed.has("KeyK")) buttons |= rightJoyConButtonBits.b;
+        if (pressed.has("KeyL")) buttons |= rightJoyConButtonBits.a;
+        if (pressed.has("KeyE")) buttons |= leftJoyConButtonBits.l;
+        if (pressed.has("KeyU")) buttons |= rightJoyConButtonBits.r;
+        if (pressed.has("KeyQ")) buttons |= leftJoyConButtonBits.minus;
+        if (pressed.has("Enter")) buttons |= rightJoyConButtonBits.plus;
+        if (pressed.has("ShiftLeft") || pressed.has("ShiftRight")) {
+          buttons |= leftJoyConButtonBits.stick;
+        }
+        if (pressed.has("KeyO")) buttons |= leftJoyConButtonBits.capture;
       } else {
         if (pressed.has("KeyS")) lx -= stickExtent;
         if (pressed.has("KeyW")) lx += stickExtent;

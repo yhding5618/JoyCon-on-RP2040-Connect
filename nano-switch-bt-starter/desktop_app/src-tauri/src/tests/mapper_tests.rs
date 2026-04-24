@@ -1,11 +1,13 @@
 use crate::bridge_protocol::{
-    BTN_LJC_CAPTURE, BTN_LJC_DOWN, BTN_LJC_LEFT, BTN_LJC_MINUS, BTN_LJC_RIGHT, BTN_LJC_SL,
-    BTN_LJC_SR, BTN_LJC_STICK, BTN_LJC_UP, BTN_RJC_A, BTN_RJC_B, BTN_RJC_HOME, BTN_RJC_PLUS,
-    BTN_RJC_SL, BTN_RJC_SR, BTN_RJC_STICK, BTN_RJC_X, BTN_RJC_Y,
+    BTN_LJC_CAPTURE, BTN_LJC_DOWN, BTN_LJC_L, BTN_LJC_LEFT, BTN_LJC_MINUS, BTN_LJC_RIGHT,
+    BTN_LJC_SL, BTN_LJC_SR, BTN_LJC_STICK, BTN_LJC_UP, BTN_RJC_A, BTN_RJC_B, BTN_RJC_HOME,
+    BTN_RJC_PLUS, BTN_RJC_R, BTN_RJC_SL, BTN_RJC_SR, BTN_RJC_STICK, BTN_RJC_X, BTN_RJC_Y,
 };
 use crate::controller_mapper::map_input_to_controller;
 use crate::model::{InputSnapshot, LatestInputState};
-use crate::profiles::{default_left_joycon_profile, default_right_joycon_profile};
+use crate::profiles::{
+    default_left_joycon_profile, default_pro_controller_profile, default_right_joycon_profile,
+};
 
 const STICK_EXTENT: i16 = 32767;
 
@@ -146,6 +148,37 @@ fn mapper_maps_wasd_to_right_hand_rotated_right_stick() {
         (keyboard_right.buttons, keyboard_right.rx, keyboard_right.ry),
         (0, 0, STICK_EXTENT)
     );
+}
+
+#[test]
+fn mapper_uses_default_pro_controller_bindings() {
+    let profile = default_pro_controller_profile();
+    let controller = state_for(
+        &profile,
+        &[
+            "KeyW",
+            "KeyL",
+            "KeyQ",
+            "KeyE",
+            "KeyU",
+            "KeyO",
+            "Enter",
+            "ShiftLeft",
+        ],
+    );
+
+    assert_eq!(
+        controller.buttons,
+        BTN_RJC_A
+            | BTN_LJC_MINUS
+            | BTN_LJC_L
+            | BTN_RJC_R
+            | BTN_LJC_CAPTURE
+            | BTN_RJC_PLUS
+            | BTN_LJC_STICK
+    );
+    assert_eq!((controller.lx, controller.ly), (0, STICK_EXTENT));
+    assert_eq!((controller.rx, controller.ry), (0, 0));
 }
 
 #[test]

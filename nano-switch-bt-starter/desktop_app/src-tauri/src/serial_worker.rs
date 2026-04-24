@@ -16,6 +16,7 @@ const READ_POLL_TIMEOUT: Duration = Duration::from_millis(100);
 const STATUS_WAIT: Duration = Duration::from_millis(1000);
 const EVENTS_WAIT: Duration = Duration::from_millis(1500);
 const COMMAND_WAIT: Duration = Duration::from_millis(1000);
+const BLUETOOTH_COMMAND_WAIT: Duration = Duration::from_millis(5000);
 
 #[derive(Debug, Clone)]
 pub enum WorkerCommand {
@@ -27,6 +28,8 @@ pub enum WorkerCommand {
     GetEvents,
     VirtualCableUnplug,
     ClearBonds,
+    SetControllerMode(u8),
+    SetBluetoothEnabled(bool),
     Shutdown,
 }
 
@@ -152,6 +155,16 @@ impl WorkerRuntime {
                 self.command_then_status(MessageType::VirtualCableUnplug)
             }
             WorkerCommand::ClearBonds => self.command_then_status(MessageType::ClearBonds),
+            WorkerCommand::SetControllerMode(mode) => self.command_with_payload_then_status(
+                MessageType::SetControllerMode,
+                &[mode],
+                COMMAND_WAIT,
+            ),
+            WorkerCommand::SetBluetoothEnabled(enabled) => self.command_with_payload_then_status(
+                MessageType::SetBluetoothEnabled,
+                &[u8::from(enabled)],
+                BLUETOOTH_COMMAND_WAIT,
+            ),
             WorkerCommand::SendState(controller_state) => {
                 let (tx_frame, frames) = self.send_state(controller_state)?;
                 Ok(WorkerReply::StateSent {
@@ -212,7 +225,16 @@ impl WorkerRuntime {
     }
 
     fn command_then_status(&mut self, message_type: MessageType) -> Result<WorkerReply, String> {
-        let (tx_frame, frames) = self.send_message(message_type, &[], COMMAND_WAIT)?;
+        self.command_with_payload_then_status(message_type, &[], COMMAND_WAIT)
+    }
+
+    fn command_with_payload_then_status(
+        &mut self,
+        message_type: MessageType,
+        payload: &[u8],
+        wait: Duration,
+    ) -> Result<WorkerReply, String> {
+        let (tx_frame, frames) = self.send_message(message_type, payload, wait)?;
         let mut tx_frames = vec![tx_frame];
         let mut rx_frames = frames.iter().map(frame_meta).collect::<Vec<_>>();
         let status = match self.request_status() {

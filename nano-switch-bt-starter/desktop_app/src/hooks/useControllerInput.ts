@@ -9,7 +9,9 @@ import {
   listSerialPortsCommand,
   pushInputSnapshot,
   selectSerialPortCommand,
+  setBluetoothEnabledCommand,
   setCaptureEnabledCommand,
+  setControllerModeCommand,
   tapLeftJoyConButtonCommand,
   virtualCableUnplugCommand,
 } from "../lib/bindings";
@@ -17,6 +19,7 @@ import { defaultInputSnapshot } from "../lib/defaults";
 import { useKeyboardCapture } from "./useKeyboardCapture";
 import { useMouseCapture } from "./useMouseCapture";
 import type { InputSnapshot } from "../models/input";
+import type { ControllerModel } from "../models/profile";
 import type { AppStateSnapshot } from "../models/ui";
 
 const FRAME_MS = 1000 / 60;
@@ -157,6 +160,18 @@ export function useControllerInput() {
     requestClearBonds: () => {
       void runCommand("clear-bonds", () => clearBondsCommand());
     },
+    setControllerMode: (mode: ControllerModel) => {
+      keyboard.clearPressedCodes();
+      mouse.resetMouseDelta();
+      void runCommand("set-mode", () => setControllerModeCommand(mode));
+    },
+    setBluetoothEnabled: (enabled: boolean) => {
+      if (!enabled) {
+        keyboard.clearPressedCodes();
+        mouse.resetMouseDelta();
+      }
+      void runCommand("bluetooth-toggle", () => setBluetoothEnabledCommand(enabled));
+    },
     tapLeftJoyConButton: (button: string) => {
       void runCommand("tap-button", () => tapLeftJoyConButtonCommand(button));
     },
@@ -197,11 +212,11 @@ function defaultAppStateSnapshot(): AppStateSnapshot {
       lastStatus: null,
     },
     profile: {
-      activeProfileId: "default-right-joycon",
+      activeProfileId: "default-left-joycon",
       activeProfile: {
-        id: "default-right-joycon",
-        name: "Default Right Joy-Con",
-        controllerModel: "RightJoyCon",
+        id: "default-left-joycon",
+        name: "Default Left Joy-Con",
+        controllerModel: "LeftJoyCon",
         bindings: {},
         mouse: {
           enabled: false,

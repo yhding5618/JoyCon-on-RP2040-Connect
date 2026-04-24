@@ -26,6 +26,8 @@ export default function App() {
     requestEvents,
     requestVirtualCableUnplug,
     requestClearBonds,
+    setControllerMode,
+    setBluetoothEnabled,
     tapLeftJoyConButton,
   } = useControllerInput();
 
@@ -72,6 +74,8 @@ export default function App() {
             onGetEvents={requestEvents}
             onVirtualCableUnplug={requestVirtualCableUnplug}
             onClearBonds={requestClearBonds}
+            onSetControllerMode={setControllerMode}
+            onSetBluetoothEnabled={setBluetoothEnabled}
             onTapButton={tapLeftJoyConButton}
           />
           <CapturePanel

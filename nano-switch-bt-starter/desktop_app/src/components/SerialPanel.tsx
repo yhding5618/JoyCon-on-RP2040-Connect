@@ -14,6 +14,8 @@ type SerialPanelProps = {
   onGetEvents: () => void;
   onVirtualCableUnplug: () => void;
   onClearBonds: () => void;
+  onSetControllerMode: (mode: ControllerModel) => void;
+  onSetBluetoothEnabled: (enabled: boolean) => void;
   onTapButton: (button: string) => void;
 };
 
@@ -29,13 +31,18 @@ export function SerialPanel({
   onGetEvents,
   onVirtualCableUnplug,
   onClearBonds,
+  onSetControllerMode,
+  onSetBluetoothEnabled,
   onTapButton,
 }: SerialPanelProps) {
-  const canSendTestTap = !loading && serial.connectionState === "Connected";
-  const testButtons =
-    controllerModel === "RightJoyCon" || controllerModel === "ProController"
-      ? ["a", "b", "x", "y", "sl", "sr", "r", "zr", "plus", "home"]
-      : ["a", "b", "x", "y", "sl", "sr", "l", "zl", "minus", "capture"];
+  const isConnected = serial.connectionState === "Connected";
+  const bluetoothEnabled = serial.lastStatus?.bluetoothEnabled === 1;
+  const firmwareMode = serial.lastStatus
+    ? controllerModelFromStatus(serial.lastStatus.controllerMode)
+    : null;
+  const canSendTestTap = !loading && isConnected;
+  const canSwitchMode = !loading && isConnected && !bluetoothEnabled;
+  const testButtons = directTestButtons(controllerModel);
 
   return (
     <Panel
@@ -113,6 +120,44 @@ export function SerialPanel({
           </button>
         </div>
 
+        <div className="mini-grid">
+          <div className="stat-card">
+            <p className="stat-label">Bluetooth Power</p>
+            <p className="stat-value">{bluetoothEnabled ? "On" : "Off"}</p>
+            <div className="button-row">
+              <button
+                className={bluetoothEnabled ? "button-danger" : "button-accent"}
+                disabled={loading || !isConnected}
+                onClick={() => onSetBluetoothEnabled(!bluetoothEnabled)}
+              >
+                {bluetoothEnabled ? "Turn Off" : "Turn On"}
+              </button>
+            </div>
+          </div>
+          <div className="stat-card">
+            <label className="stat-label" htmlFor="controller-mode-select">
+              Controller Mode
+            </label>
+            <select
+              id="controller-mode-select"
+              value={controllerModel}
+              disabled={!canSwitchMode}
+              onChange={(event) =>
+                onSetControllerMode(event.target.value as ControllerModel)
+              }
+            >
+              <option value="LeftJoyCon">Joy-Con Left</option>
+              <option value="RightJoyCon">Joy-Con Right</option>
+              <option value="ProController">Switch Pro Controller</option>
+            </select>
+            <p className="muted">
+              {bluetoothEnabled
+                ? "Turn Bluetooth off before changing modes."
+                : "Mode changes apply to the next Bluetooth identity."}
+            </p>
+          </div>
+        </div>
+
         {serial.lastStatus ? (
           <div className="mini-grid">
             <div className="stat-card">
@@ -135,7 +180,9 @@ export function SerialPanel({
             </div>
             <div className="stat-card">
               <p className="stat-label">Controller Mode</p>
-              <p className="stat-value">{serial.lastStatus.controllerMode}</p>
+              <p className="stat-value">
+                {firmwareMode ? controllerModelLabel(firmwareMode) : "Unknown"}
+              </p>
             </div>
             <div className="stat-card">
               <p className="stat-label">Bluetooth</p>
@@ -163,4 +210,50 @@ export function SerialPanel({
       </div>
     </Panel>
   );
+}
+
+function controllerModelFromStatus(mode: number): ControllerModel | null {
+  if (mode === 0) {
+    return "LeftJoyCon";
+  }
+  if (mode === 1) {
+    return "RightJoyCon";
+  }
+  if (mode === 2) {
+    return "ProController";
+  }
+  return null;
+}
+
+function controllerModelLabel(model: ControllerModel): string {
+  if (model === "LeftJoyCon") {
+    return "Joy-Con Left";
+  }
+  if (model === "RightJoyCon") {
+    return "Joy-Con Right";
+  }
+  return "Switch Pro Controller";
+}
+
+function directTestButtons(controllerModel: ControllerModel): string[] {
+  if (controllerModel === "RightJoyCon") {
+    return ["a", "b", "x", "y", "sl", "sr", "r", "zr", "plus", "home"];
+  }
+  if (controllerModel === "ProController") {
+    return [
+      "a",
+      "b",
+      "x",
+      "y",
+      "l",
+      "r",
+      "zl",
+      "zr",
+      "minus",
+      "plus",
+      "capture",
+      "home",
+    ];
+  }
+  return ["a", "b", "x", "y", "sl", "sr", "l", "zl", "minus", "capture"];
 }

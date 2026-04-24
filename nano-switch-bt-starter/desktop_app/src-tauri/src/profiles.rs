@@ -69,3 +69,46 @@ pub fn default_right_joycon_profile() -> Profile {
         output_rate_hz: 125,
     }
 }
+
+pub fn default_pro_controller_profile() -> Profile {
+    let mut bindings = BTreeMap::new();
+    bindings.insert("KeyW".to_string(), LogicalAction::MoveUp);
+    bindings.insert("KeyS".to_string(), LogicalAction::MoveDown);
+    bindings.insert("KeyA".to_string(), LogicalAction::MoveLeft);
+    bindings.insert("KeyD".to_string(), LogicalAction::MoveRight);
+    bindings.insert("KeyL".to_string(), LogicalAction::A);
+    bindings.insert("KeyK".to_string(), LogicalAction::B);
+    bindings.insert("KeyI".to_string(), LogicalAction::X);
+    bindings.insert("KeyJ".to_string(), LogicalAction::Y);
+    bindings.insert("KeyQ".to_string(), LogicalAction::Minus);
+    bindings.insert("KeyE".to_string(), LogicalAction::L);
+    bindings.insert("KeyU".to_string(), LogicalAction::R);
+    bindings.insert("KeyO".to_string(), LogicalAction::Capture);
+    bindings.insert("Enter".to_string(), LogicalAction::Plus);
+    bindings.insert("ShiftLeft".to_string(), LogicalAction::Stick);
+
+    Profile {
+        id: "default-pro-controller".to_string(),
+        name: "Default Pro Controller".to_string(),
+        controller_model: ControllerModel::ProController,
+        bindings,
+        mouse: MouseSettings {
+            enabled: false,
+            sensitivity_x: 1.0,
+            sensitivity_y: 1.0,
+            invert_y: false,
+            deadzone: 0.05,
+            smoothing: 0.2,
+            decay_ms: 40,
+        },
+        output_rate_hz: 125,
+    }
+}
+
+pub fn default_profile_for_model(model: ControllerModel) -> Profile {
+    match model {
+        ControllerModel::LeftJoyCon => default_left_joycon_profile(),
+        ControllerModel::RightJoyCon => default_right_joycon_profile(),
+        ControllerModel::ProController => default_pro_controller_profile(),
+    }
+}
