@@ -583,10 +583,10 @@ export function pushInputSnapshot(
         if (pressed.has("KeyS")) lx += stickExtent;
         if (pressed.has("KeyA")) ly -= stickExtent;
         if (pressed.has("KeyD")) ly += stickExtent;
-        if (pressed.has("KeyJ")) buttons |= rightJoyConButtonBits.y;
-        if (pressed.has("KeyI")) buttons |= rightJoyConButtonBits.x;
-        if (pressed.has("KeyK")) buttons |= rightJoyConButtonBits.b;
-        if (pressed.has("KeyL")) buttons |= rightJoyConButtonBits.a;
+        if (pressed.has("KeyI")) buttons |= rightJoyConButtonBits.y;
+        if (pressed.has("KeyJ")) buttons |= rightJoyConButtonBits.b;
+        if (pressed.has("KeyK")) buttons |= rightJoyConButtonBits.a;
+        if (pressed.has("KeyL")) buttons |= rightJoyConButtonBits.x;
         if (pressed.has("KeyE")) buttons |= rightJoyConButtonBits.sl;
         if (pressed.has("KeyU")) buttons |= rightJoyConButtonBits.sr;
         if (pressed.has("KeyQ")) buttons |= rightJoyConButtonBits.plus;

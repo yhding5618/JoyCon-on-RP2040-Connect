@@ -42,10 +42,10 @@ pub fn default_right_joycon_profile() -> Profile {
     bindings.insert("KeyS".to_string(), LogicalAction::MoveRight);
     bindings.insert("KeyA".to_string(), LogicalAction::MoveDown);
     bindings.insert("KeyD".to_string(), LogicalAction::MoveUp);
-    bindings.insert("KeyL".to_string(), LogicalAction::A);
-    bindings.insert("KeyK".to_string(), LogicalAction::B);
-    bindings.insert("KeyI".to_string(), LogicalAction::X);
-    bindings.insert("KeyJ".to_string(), LogicalAction::Y);
+    bindings.insert("KeyI".to_string(), LogicalAction::Y);
+    bindings.insert("KeyJ".to_string(), LogicalAction::B);
+    bindings.insert("KeyK".to_string(), LogicalAction::A);
+    bindings.insert("KeyL".to_string(), LogicalAction::X);
     bindings.insert("KeyQ".to_string(), LogicalAction::Plus);
     bindings.insert("KeyE".to_string(), LogicalAction::SL);
     bindings.insert("KeyU".to_string(), LogicalAction::SR);

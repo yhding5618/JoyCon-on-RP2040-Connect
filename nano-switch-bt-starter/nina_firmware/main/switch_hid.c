@@ -24,6 +24,7 @@
 #define SWITCH_ACK_IMU_REG_READ 0xC0u
 #define SWITCH_ACK_PLAYER_LIGHTS 0xB0u
 #define SWITCH_ACK_REGULATED_VOLTAGE 0xD0u
+#define SWITCH_ACK_NFC_IR_MCU_CONFIG 0xA0u
 
 #define SWITCH_CONNECTION_INFO_JOYCON_WIRELESS 0x0Eu
 
@@ -45,6 +46,8 @@
 #define SWITCH_SUBCMD_TRIGGER_BUTTONS_ELAPSED 0x04u
 #define SWITCH_SUBCMD_SET_SHIPMENT_LOW_POWER 0x08u
 #define SWITCH_SUBCMD_SPI_FLASH_READ 0x10u
+#define SWITCH_SUBCMD_SET_NFC_IR_MCU_CONFIG 0x21u
+#define SWITCH_SUBCMD_SET_NFC_IR_MCU_STATE 0x22u
 #define SWITCH_SUBCMD_SET_PLAYER_LIGHTS 0x30u
 #define SWITCH_SUBCMD_GET_PLAYER_LIGHTS 0x31u
 #define SWITCH_SUBCMD_ENABLE_IMU 0x40u
@@ -54,13 +57,18 @@
 
 #define SWITCH_CONTROLLER_TYPE_LEFT_JOYCON 0x01u
 #define SWITCH_CONTROLLER_TYPE_RIGHT_JOYCON 0x02u
-#define SWITCH_CONTROLLER_TYPE_PRO_CONTROLLER 0x03u
+#define SWITCH_CONTROLLER_TYPE_PRO 0x03u
+#define SWITCH_CONTROLLER_TYPE_PRO_CONTROLLER SWITCH_CONTROLLER_TYPE_PRO
 
+#define SWITCH_STICK_CENTER 0x0800u
+#define SWITCH_SIMPLE_STICK_CENTER 0x8000u
 #define SWITCH_INPUT_COMMON_BYTES 12u
 #define SWITCH_SUBCOMMAND_REPLY_BYTES 48u
 #define SWITCH_STANDARD_REPORT_BYTES 48u
 #define SWITCH_SIMPLE_REPORT_BYTES 11u
 #define SWITCH_DEVICE_INFO_REPLY_BYTES 12u
+#define SWITCH_TRIGGER_ELAPSED_REPLY_BYTES 14u
+#define SWITCH_NFC_IR_MCU_CONFIG_REPLY_BYTES 34u
 #define SWITCH_SPI_READ_MAX_BYTES 0x1Du
 #define SWITCH_MAX_BOND_DEVICES 16
 #define SWITCH_EVENT_RING_SIZE SB_EVENT_LOG_MAX_ENTRIES
@@ -132,6 +140,12 @@ typedef enum {
   SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_0 = 0x0Fu,
   SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_1 = 0x10u,
 } switch_bt_identity_event_t;
+
+typedef enum {
+  SWITCH_PROFILE_LEFT_JOYCON = SB_CONTROLLER_MODE_LEFT_JOYCON,
+  SWITCH_PROFILE_RIGHT_JOYCON = SB_CONTROLLER_MODE_RIGHT_JOYCON,
+  SWITCH_PROFILE_PRO_CONTROLLER = SB_CONTROLLER_MODE_PRO_CONTROLLER,
+} switch_controller_profile_t;
 
 static const uint8_t kPeripheralMinorClassGamepad = 0x02;
 static const uint8_t kNintendoBaseMacPrefix[3] = {0xD4u, 0xF0u, 0x57u};
@@ -250,7 +264,7 @@ static sb_status_payload_t s_status = {
     .reserved0 = 0,
     .reserved1 = 0,
 };
-static sb_controller_mode_t s_controller_mode = SB_CONTROLLER_MODE_LEFT_JOYCON;
+static switch_controller_profile_t s_controller_profile = SWITCH_PROFILE_LEFT_JOYCON;
 static bool s_bluetooth_enabled = false;
 static uint64_t s_last_report_us = 0;
 static uint8_t s_report_timer = 0;
@@ -335,44 +349,78 @@ static void reset_controller_runtime_state(void) {
   s_report_timer = 0;
 }
 
-static const char *active_local_name(void) {
-  switch (s_controller_mode) {
-    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
-      return "Joy-Con (R)";
-    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
-      return "Pro Controller";
+static bool switch_profile_from_mode(sb_controller_mode_t mode, switch_controller_profile_t *profile) {
+  switch (mode) {
     case SB_CONTROLLER_MODE_LEFT_JOYCON:
+      if (profile != NULL) {
+        *profile = SWITCH_PROFILE_LEFT_JOYCON;
+      }
+      return true;
+    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
+      if (profile != NULL) {
+        *profile = SWITCH_PROFILE_RIGHT_JOYCON;
+      }
+      return true;
+    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
+      if (profile != NULL) {
+        *profile = SWITCH_PROFILE_PRO_CONTROLLER;
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
+static sb_controller_mode_t switch_controller_mode(void) {
+  return (sb_controller_mode_t)s_controller_profile;
+}
+
+static const char *switch_controller_name(void) {
+  switch (s_controller_profile) {
+    case SWITCH_PROFILE_RIGHT_JOYCON:
+      return "Joy-Con (R)";
+    case SWITCH_PROFILE_PRO_CONTROLLER:
+      return "Pro Controller";
+    case SWITCH_PROFILE_LEFT_JOYCON:
     default:
       return "Joy-Con (L)";
   }
 }
 
-static uint8_t active_controller_type(void) {
-  switch (s_controller_mode) {
-    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
+static uint8_t switch_controller_type(void) {
+  switch (s_controller_profile) {
+    case SWITCH_PROFILE_RIGHT_JOYCON:
       return SWITCH_CONTROLLER_TYPE_RIGHT_JOYCON;
-    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
-      return SWITCH_CONTROLLER_TYPE_PRO_CONTROLLER;
-    case SB_CONTROLLER_MODE_LEFT_JOYCON:
+    case SWITCH_PROFILE_PRO_CONTROLLER:
+      return SWITCH_CONTROLLER_TYPE_PRO;
+    case SWITCH_PROFILE_LEFT_JOYCON:
     default:
       return SWITCH_CONTROLLER_TYPE_LEFT_JOYCON;
   }
 }
 
+static bool switch_profile_has_left_side(void) {
+  return s_controller_profile != SWITCH_PROFILE_RIGHT_JOYCON;
+}
+
+static bool switch_profile_has_right_side(void) {
+  return s_controller_profile != SWITCH_PROFILE_LEFT_JOYCON;
+}
+
 static uint8_t active_mac_suffix_xor(void) {
-  switch (s_controller_mode) {
-    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
+  switch (s_controller_profile) {
+    case SWITCH_PROFILE_RIGHT_JOYCON:
       return 0x01u;
-    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
+    case SWITCH_PROFILE_PRO_CONTROLLER:
       return 0x02u;
-    case SB_CONTROLLER_MODE_LEFT_JOYCON:
+    case SWITCH_PROFILE_LEFT_JOYCON:
     default:
       return 0x00u;
   }
 }
 
 static void sync_mode_status(void) {
-  s_status.controller_mode = (uint8_t)s_controller_mode;
+  s_status.controller_mode = (uint8_t)switch_controller_mode();
   s_status.bluetooth_enabled = s_bluetooth_enabled ? 1u : 0u;
   if (s_bluetooth_enabled) {
     s_status.flags |= SB_STATUS_FLAG_BT_POWERED;
@@ -465,7 +513,7 @@ static void log_bt_identity(const char *stage) {
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
                SWITCH_BT_IDENTITY_EVENT_HID_DESC_HI_NAME_LEN,
                (uint8_t)((descriptor_len >> 8) & 0xFFu),
-               clamp_size_to_u8(strlen(active_local_name())));
+               clamp_size_to_u8(strlen(switch_controller_name())));
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
                SWITCH_BT_IDENTITY_EVENT_HID_STRING_LENGTHS,
                clamp_size_to_u8(strlen(kSwitchJoyConApp.name)),
@@ -478,7 +526,8 @@ static void log_bt_identity(const char *stage) {
   ESP_LOGI(TAG,
            "BT_IDENTITY stage=%s bt_addr=%02X:%02X:%02X:%02X:%02X:%02X "
            "intended_base_mac=%02X:%02X:%02X:%02X:%02X:%02X "
-           "gap_name=\"%s\" cod_err=0x%02X cod_major=0x%02X cod_minor=0x%02X "
+           "profile=%u controller_type=0x%02X gap_name=\"%s\" "
+           "cod_err=0x%02X cod_major=0x%02X cod_minor=0x%02X "
            "cod_service=0x%03X hid_service=\"%s\" description=\"%s\" provider=\"%s\" "
            "hid_subclass=0x%02X descriptor_len=%u",
            stage != NULL ? stage : "unknown",
@@ -494,7 +543,9 @@ static void log_bt_identity(const char *stage) {
            base_mac[3],
            base_mac[4],
            base_mac[5],
-           active_local_name(),
+           (unsigned int)switch_controller_mode(),
+           (unsigned int)switch_controller_type(),
+           switch_controller_name(),
            (unsigned int)cod_err,
            (unsigned int)cod.major,
            (unsigned int)cod.minor,
@@ -534,7 +585,7 @@ static void configure_gap_identity(void) {
   esp_err_t cod_err = ESP_OK;
   esp_err_t scan_err = ESP_OK;
 
-  name_err = esp_bt_dev_set_device_name(active_local_name());
+  name_err = esp_bt_dev_set_device_name(switch_controller_name());
   cod_err = esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
   scan_err = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
@@ -585,8 +636,47 @@ static esp_err_t send_hid_report(esp_hidd_report_type_t report_type,
                                  uint8_t report_id,
                                  size_t report_len,
                                  const uint8_t *report_data) {
+  static bool logged_full_report_shape = false;
+  static bool logged_reply_report_shape = false;
+
   if (report_data == NULL || report_len == 0u) {
     return ESP_ERR_INVALID_ARG;
+  }
+
+  if (report_id == SWITCH_REPORT_STANDARD_FULL) {
+    if (!logged_full_report_shape) {
+      ESP_LOGI(TAG,
+               "HID_REPORT_SHAPE report_id=0x%02X len=%u expected=%u hidp_prefix=none "
+               "profile=%u",
+               report_id,
+               (unsigned int)report_len,
+               (unsigned int)SWITCH_STANDARD_REPORT_BYTES,
+               (unsigned int)switch_controller_mode());
+      logged_full_report_shape = true;
+    }
+    if (report_len != SWITCH_STANDARD_REPORT_BYTES) {
+      ESP_LOGW(TAG,
+               "unexpected 0x30 payload length: got=%u expected=%u",
+               (unsigned int)report_len,
+               (unsigned int)SWITCH_STANDARD_REPORT_BYTES);
+    }
+  } else if (report_id == SWITCH_REPORT_SUBCOMMAND_REPLY) {
+    if (!logged_reply_report_shape) {
+      ESP_LOGI(TAG,
+               "HID_REPORT_SHAPE report_id=0x%02X len=%u expected=%u hidp_prefix=none "
+               "profile=%u",
+               report_id,
+               (unsigned int)report_len,
+               (unsigned int)SWITCH_SUBCOMMAND_REPLY_BYTES,
+               (unsigned int)switch_controller_mode());
+      logged_reply_report_shape = true;
+    }
+    if (report_len != SWITCH_SUBCOMMAND_REPLY_BYTES) {
+      ESP_LOGW(TAG,
+               "unexpected 0x21 payload length: got=%u expected=%u",
+               (unsigned int)report_len,
+               (unsigned int)SWITCH_SUBCOMMAND_REPLY_BYTES);
+    }
   }
 
   esp_err_t err = esp_bt_hid_device_send_report(
@@ -671,7 +761,7 @@ static void overlay_spi_range(uint32_t request_addr,
 
 static void read_switch_spi_flash(uint32_t address, uint8_t *out, size_t len) {
   uint8_t patchram_addr_record[9] = {0x40, 0x06, 0x00, 0, 0, 0, 0, 0, 0};
-  uint8_t device_type[1] = {active_controller_type()};
+  uint8_t device_type[1] = {switch_controller_type()};
   uint8_t serial_number[sizeof(kSerialNumberTemplate)];
   uint8_t factory_unknown[1] = {0xA0};
   uint8_t color_info_present[1] = {0x01};
@@ -685,14 +775,14 @@ static void read_switch_spi_flash(uint32_t address, uint8_t *out, size_t len) {
 
   copy_bt_address_le(&patchram_addr_record[3]);
   memcpy(serial_number, kSerialNumberTemplate, sizeof(serial_number));
-  switch (s_controller_mode) {
-    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
+  switch (s_controller_profile) {
+    case SWITCH_PROFILE_RIGHT_JOYCON:
       serial_number[3] = 'R';
       break;
-    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
+    case SWITCH_PROFILE_PRO_CONTROLLER:
       serial_number[3] = 'P';
       break;
-    case SB_CONTROLLER_MODE_LEFT_JOYCON:
+    case SWITCH_PROFILE_LEFT_JOYCON:
     default:
       serial_number[3] = 'L';
       break;
@@ -789,6 +879,10 @@ static void pack_switch_stick(uint16_t x, uint16_t y, uint8_t out[3]) {
   out[2] = (uint8_t)((y >> 4) & 0xFFu);
 }
 
+static void pack_center_stick(uint8_t out[3]) {
+  pack_switch_stick(SWITCH_STICK_CENTER, SWITCH_STICK_CENTER, out);
+}
+
 static uint32_t hat_to_left_dpad_bits(uint8_t hat) {
   switch (hat) {
     case 0u:
@@ -812,16 +906,23 @@ static uint32_t hat_to_left_dpad_bits(uint8_t hat) {
   }
 }
 
+static uint32_t hat_to_profile_dpad_bits(uint8_t hat) {
+  if (!switch_profile_has_left_side()) {
+    return 0u;
+  }
+  return hat_to_left_dpad_bits(hat);
+}
+
 static void build_common_input_report(uint8_t report[SWITCH_INPUT_COMMON_BYTES]) {
-  const bool reports_left = s_controller_mode != SB_CONTROLLER_MODE_RIGHT_JOYCON;
-  const bool reports_right = s_controller_mode != SB_CONTROLLER_MODE_LEFT_JOYCON;
+  const bool reports_left = switch_profile_has_left_side();
+  const bool reports_right = switch_profile_has_right_side();
   uint32_t buttons = s_state.buttons;
   uint8_t right_buttons = 0;
   uint8_t left_buttons = 0;
   uint8_t shared_buttons = 0;
 
   if (reports_left) {
-    buttons |= hat_to_left_dpad_bits(s_state.hat);
+    buttons |= hat_to_profile_dpad_bits(s_state.hat);
     if ((buttons & SB_BTN_LJC_DOWN) != 0u) {
       left_buttons |= 0x01u;
     }
@@ -905,24 +1006,60 @@ static void build_common_input_report(uint8_t report[SWITCH_INPUT_COMMON_BYTES])
   report[2] = right_buttons;
   report[3] = shared_buttons;
   report[4] = left_buttons;
-  pack_switch_stick(scale_axis_u12(s_state.lx), scale_axis_u12(s_state.ly), &report[5]);
-  pack_switch_stick(scale_axis_u12(s_state.rx), scale_axis_u12(s_state.ry), &report[8]);
+  if (reports_left) {
+    pack_switch_stick(scale_axis_u12(s_state.lx), scale_axis_u12(s_state.ly), &report[5]);
+  } else {
+    pack_center_stick(&report[5]);
+  }
+  if (reports_right) {
+    pack_switch_stick(scale_axis_u12(s_state.rx), scale_axis_u12(s_state.ry), &report[8]);
+  } else {
+    pack_center_stick(&report[8]);
+  }
   report[11] = 0x80u;
+
+  {
+    static bool logged_common_report = false;
+    static uint8_t last_common_payload[SWITCH_INPUT_COMMON_BYTES - 1u] = {0};
+    if (!logged_common_report ||
+        memcmp(last_common_payload, &report[1], sizeof(last_common_payload)) != 0) {
+      ESP_LOGD(TAG,
+               "COMMON_REPORT profile=%u type=0x%02X mode=0x%02X bytes=%02X %02X %02X %02X "
+               "%02X %02X %02X %02X %02X %02X %02X %02X",
+               (unsigned int)switch_controller_mode(),
+               (unsigned int)switch_controller_type(),
+               (unsigned int)s_status.input_report_mode,
+               report[0],
+               report[1],
+               report[2],
+               report[3],
+               report[4],
+               report[5],
+               report[6],
+               report[7],
+               report[8],
+               report[9],
+               report[10],
+               report[11]);
+      memcpy(last_common_payload, &report[1], sizeof(last_common_payload));
+      logged_common_report = true;
+    }
+  }
 }
 
 static void build_simple_input_report(uint8_t report[SWITCH_SIMPLE_REPORT_BYTES]) {
-  const bool reports_left = s_controller_mode != SB_CONTROLLER_MODE_RIGHT_JOYCON;
-  const bool reports_right = s_controller_mode != SB_CONTROLLER_MODE_LEFT_JOYCON;
+  const bool reports_left = switch_profile_has_left_side();
+  const bool reports_right = switch_profile_has_right_side();
   uint32_t buttons = s_state.buttons;
-  uint16_t left_x = scale_axis_u16(s_state.lx);
-  uint16_t left_y = scale_axis_u16(s_state.ly);
-  uint16_t right_x = scale_axis_u16(s_state.rx);
-  uint16_t right_y = scale_axis_u16(s_state.ry);
+  uint16_t left_x = reports_left ? scale_axis_u16(s_state.lx) : SWITCH_SIMPLE_STICK_CENTER;
+  uint16_t left_y = reports_left ? scale_axis_u16(s_state.ly) : SWITCH_SIMPLE_STICK_CENTER;
+  uint16_t right_x = reports_right ? scale_axis_u16(s_state.rx) : SWITCH_SIMPLE_STICK_CENTER;
+  uint16_t right_y = reports_right ? scale_axis_u16(s_state.ry) : SWITCH_SIMPLE_STICK_CENTER;
 
   memset(report, 0, SWITCH_SIMPLE_REPORT_BYTES);
 
   if (reports_left) {
-    buttons |= hat_to_left_dpad_bits(s_state.hat);
+    buttons |= hat_to_profile_dpad_bits(s_state.hat);
     if ((buttons & SB_BTN_LJC_DOWN) != 0u) {
       report[0] |= 0x01u;
     }
@@ -1034,7 +1171,7 @@ static void build_device_info_reply(uint8_t reply[SWITCH_DEVICE_INFO_REPLY_BYTES
   memset(reply, 0, SWITCH_DEVICE_INFO_REPLY_BYTES);
   reply[0] = 0x04u;
   reply[1] = 0x00u;
-  reply[2] = active_controller_type();
+  reply[2] = switch_controller_type();
   reply[3] = 0x02u;
   memcpy(&reply[4], address_be, sizeof(address_be));
   reply[10] = 0x01u;
@@ -1080,12 +1217,34 @@ static uint16_t get_regulated_voltage_sample(void) {
   return 0x0550u;
 }
 
-static void build_trigger_elapsed_reply(uint8_t reply[7]) {
-  memset(reply, 0, 7u);
-  reply[3] = 0x2Cu;
-  reply[4] = 0x01u;
-  reply[5] = 0x2Cu;
-  reply[6] = 0x01u;
+static void build_trigger_elapsed_reply(uint8_t reply[SWITCH_TRIGGER_ELAPSED_REPLY_BYTES]) {
+  const uint8_t elapsed_lo = 0x2Cu;
+  const uint8_t elapsed_hi = 0x01u;
+  memset(reply, 0, SWITCH_TRIGGER_ELAPSED_REPLY_BYTES);
+
+  if (s_controller_profile == SWITCH_PROFILE_PRO_CONTROLLER) {
+    reply[0] = elapsed_lo;
+    reply[1] = elapsed_hi;
+    reply[2] = elapsed_lo;
+    reply[3] = elapsed_hi;
+    return;
+  }
+
+  reply[8] = elapsed_lo;
+  reply[9] = elapsed_hi;
+  reply[10] = elapsed_lo;
+  reply[11] = elapsed_hi;
+}
+
+static void build_nfc_ir_mcu_config_reply(
+    uint8_t reply[SWITCH_NFC_IR_MCU_CONFIG_REPLY_BYTES]) {
+  static const uint8_t kNfcIrMcuConfigReply[SWITCH_NFC_IR_MCU_CONFIG_REPLY_BYTES] = {
+      0x01u, 0x00u, 0xFFu, 0x00u, 0x08u, 0x00u, 0x1Bu, 0x01u, 0x00u, 0x00u, 0x00u, 0x00u,
+      0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+      0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0xC8u,
+  };
+
+  memcpy(reply, kNfcIrMcuConfigReply, sizeof(kNfcIrMcuConfigReply));
 }
 
 static void handle_subcommand(uint8_t subcommand, const uint8_t *args, size_t args_len) {
@@ -1113,7 +1272,8 @@ static void handle_subcommand(uint8_t subcommand, const uint8_t *args, size_t ar
 
     case SWITCH_SUBCMD_TRIGGER_BUTTONS_ELAPSED:
       build_trigger_elapsed_reply(reply);
-      (void)send_subcommand_reply(SWITCH_ACK_TRIGGER_BUTTONS, subcommand, reply, 7u);
+      (void)send_subcommand_reply(
+          SWITCH_ACK_TRIGGER_BUTTONS, subcommand, reply, SWITCH_TRIGGER_ELAPSED_REPLY_BYTES);
       break;
 
     case SWITCH_SUBCMD_SET_SHIPMENT_LOW_POWER:
@@ -1125,6 +1285,18 @@ static void handle_subcommand(uint8_t subcommand, const uint8_t *args, size_t ar
 
     case SWITCH_SUBCMD_SPI_FLASH_READ:
       reply_spi_flash_read(args, args_len);
+      break;
+
+    case SWITCH_SUBCMD_SET_NFC_IR_MCU_CONFIG:
+      build_nfc_ir_mcu_config_reply(reply);
+      (void)send_subcommand_reply(SWITCH_ACK_NFC_IR_MCU_CONFIG,
+                                  subcommand,
+                                  reply,
+                                  SWITCH_NFC_IR_MCU_CONFIG_REPLY_BYTES);
+      break;
+
+    case SWITCH_SUBCMD_SET_NFC_IR_MCU_STATE:
+      (void)send_subcommand_reply(SWITCH_ACK_SIMPLE, subcommand, NULL, 0u);
       break;
 
     case SWITCH_SUBCMD_SET_PLAYER_LIGHTS:
@@ -1459,7 +1631,7 @@ static esp_err_t stop_bluetooth(void) {
   record_event(SB_EVENT_SOURCE_BRIDGE,
                SB_MSG_SET_BLUETOOTH_ENABLED,
                0u,
-               (uint8_t)s_controller_mode);
+               (uint8_t)switch_controller_mode());
 
   if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) != 0u) {
     esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
@@ -1524,7 +1696,7 @@ static esp_err_t start_bluetooth(void) {
   record_event(SB_EVENT_SOURCE_BRIDGE,
                SB_MSG_SET_BLUETOOTH_ENABLED,
                1u,
-               (uint8_t)s_controller_mode);
+               (uint8_t)switch_controller_mode());
 
   err = configure_nintendo_like_base_mac();
   if (err != ESP_OK) {
@@ -1629,7 +1801,7 @@ esp_err_t switch_hid_init(void) {
     return err;
   }
 
-  s_controller_mode = SB_CONTROLLER_MODE_LEFT_JOYCON;
+  s_controller_profile = SWITCH_PROFILE_LEFT_JOYCON;
   s_bluetooth_enabled = false;
   s_intended_base_mac_valid = false;
   s_status.flags = SB_STATUS_FLAG_BRIDGE_READY;
@@ -1644,25 +1816,33 @@ esp_err_t switch_hid_init(void) {
 }
 
 esp_err_t switch_hid_set_controller_mode(sb_controller_mode_t mode) {
+  switch_controller_profile_t profile = SWITCH_PROFILE_LEFT_JOYCON;
   record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_SET_CONTROLLER_MODE, (uint8_t)mode, 0u);
 
-  if (mode != SB_CONTROLLER_MODE_LEFT_JOYCON &&
-      mode != SB_CONTROLLER_MODE_RIGHT_JOYCON &&
-      mode != SB_CONTROLLER_MODE_PRO_CONTROLLER) {
+  if (!switch_profile_from_mode(mode, &profile)) {
     s_status.last_error = (uint8_t)ESP_ERR_INVALID_ARG;
     return ESP_ERR_INVALID_ARG;
   }
 
   if (s_bluetooth_enabled) {
     s_status.last_error = (uint8_t)ESP_ERR_INVALID_STATE;
+    ESP_LOGW(TAG,
+             "controller profile change rejected while Bluetooth is enabled: requested=%u active=%u",
+             (unsigned int)mode,
+             (unsigned int)switch_controller_mode());
     return ESP_ERR_INVALID_STATE;
   }
 
-  s_controller_mode = mode;
+  s_controller_profile = profile;
   s_intended_base_mac_valid = false;
   s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
   reset_controller_runtime_state();
   sync_mode_status();
+  ESP_LOGI(TAG,
+           "controller profile set: mode=%u type=0x%02X name=\"%s\"",
+           (unsigned int)switch_controller_mode(),
+           (unsigned int)switch_controller_type(),
+           switch_controller_name());
   return ESP_OK;
 }
 

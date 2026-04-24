@@ -69,8 +69,8 @@ function mappingSummary(controllerModel: ControllerModel): {
   if (controllerModel === "RightJoyCon") {
     return {
       label: "Joy-Con Right",
-      orientation: "Single Joy-Con, vertical right-hand rotation. WASD targets the right stick with the opposite rotation; L/K/I/J map directly to A/B/X/Y.",
-      copy: "Right Joy-Con mode mirrors the stick rotation and uses right-side button bits.",
+      orientation: "Single Joy-Con, vertical right-hand rotation. WASD targets the right stick with the opposite rotation; I/J/K/L map to Y/B/A/X.",
+      copy: "Right Joy-Con mode mirrors the stick rotation and uses the requested rotated face-button layout.",
     };
   }
 

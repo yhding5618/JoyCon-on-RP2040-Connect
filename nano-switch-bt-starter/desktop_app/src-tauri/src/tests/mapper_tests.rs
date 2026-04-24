@@ -100,7 +100,7 @@ fn mapper_uses_default_right_joycon_bindings() {
     let profile = default_right_joycon_profile();
     let controller = state_for(
         &profile,
-        &["KeyW", "KeyL", "KeyQ", "KeyE", "KeyU", "KeyO", "ShiftRight"],
+        &["KeyW", "KeyK", "KeyQ", "KeyE", "KeyU", "KeyO", "ShiftRight"],
     );
 
     assert_eq!(
@@ -115,10 +115,10 @@ fn mapper_uses_default_right_joycon_bindings() {
 fn mapper_maps_lkij_to_right_joycon_face_buttons() {
     let profile = default_right_joycon_profile();
 
-    assert_eq!(state_for(&profile, &["KeyL"]).buttons, BTN_RJC_A);
-    assert_eq!(state_for(&profile, &["KeyK"]).buttons, BTN_RJC_B);
-    assert_eq!(state_for(&profile, &["KeyI"]).buttons, BTN_RJC_X);
-    assert_eq!(state_for(&profile, &["KeyJ"]).buttons, BTN_RJC_Y);
+    assert_eq!(state_for(&profile, &["KeyI"]).buttons, BTN_RJC_Y);
+    assert_eq!(state_for(&profile, &["KeyJ"]).buttons, BTN_RJC_B);
+    assert_eq!(state_for(&profile, &["KeyK"]).buttons, BTN_RJC_A);
+    assert_eq!(state_for(&profile, &["KeyL"]).buttons, BTN_RJC_X);
 }
 
 #[test]
