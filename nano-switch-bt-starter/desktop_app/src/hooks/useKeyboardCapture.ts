@@ -1,38 +1,83 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type KeyboardCapture = {
-  pressedCodes: string[];
+  observedPressedCodes: string[];
+  capturedPressedCodes: string[];
   windowFocused: boolean;
-  clearPressedCodes: () => void;
+  clear: () => void;
 };
 
-export function useKeyboardCapture(enabled: boolean): KeyboardCapture {
-  const [pressedCodes, setPressedCodes] = useState<string[]>([]);
+export function useKeyboardCapture(
+  captureEnabled: boolean,
+  onToggleCapture: () => void,
+): KeyboardCapture {
+  const [observedPressedCodes, setObservedPressedCodes] = useState<string[]>([]);
+  const [capturedPressedCodes, setCapturedPressedCodes] = useState<string[]>([]);
   const [windowFocused, setWindowFocused] = useState<boolean>(true);
+  const captureEnabledRef = useRef(captureEnabled);
+  const onToggleCaptureRef = useRef(onToggleCapture);
 
   useEffect(() => {
-    if (!enabled) {
-      setPressedCodes([]);
+    captureEnabledRef.current = captureEnabled;
+  }, [captureEnabled]);
+
+  useEffect(() => {
+    onToggleCaptureRef.current = onToggleCapture;
+  }, [onToggleCapture]);
+
+  useEffect(() => {
+    if (!captureEnabled) {
+      setObservedPressedCodes([]);
+      setCapturedPressedCodes([]);
       return;
     }
 
+    setCapturedPressedCodes(
+      observedPressedCodes.filter((code) => code !== "F8"),
+    );
+  }, [captureEnabled, observedPressedCodes]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "F8") {
+        event.preventDefault();
+        setObservedPressedCodes((current) => appendCode(current, event.code));
+        if (!event.repeat) {
+          onToggleCaptureRef.current();
+        }
+        return;
+      }
+
       if (event.repeat) {
         return;
       }
 
-      setPressedCodes((current) =>
-        current.includes(event.code) ? current : [...current, event.code],
-      );
+      if (!captureEnabledRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      setObservedPressedCodes((current) => appendCode(current, event.code));
+      setCapturedPressedCodes((current) => appendCode(current, event.code));
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
-      setPressedCodes((current) => current.filter((code) => code !== event.code));
+      if (event.code === "F8") {
+        event.preventDefault();
+      }
+
+      setObservedPressedCodes((current) =>
+        current.filter((code) => code !== event.code),
+      );
+      setCapturedPressedCodes((current) =>
+        current.filter((code) => code !== event.code),
+      );
     };
 
     const handleBlur = () => {
       setWindowFocused(false);
-      setPressedCodes([]);
+      setObservedPressedCodes([]);
+      setCapturedPressedCodes([]);
     };
 
     const handleFocus = () => {
@@ -50,11 +95,19 @@ export function useKeyboardCapture(enabled: boolean): KeyboardCapture {
       window.removeEventListener("blur", handleBlur);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [enabled]);
+  }, []);
 
   return {
-    pressedCodes,
+    observedPressedCodes,
+    capturedPressedCodes,
     windowFocused,
-    clearPressedCodes: () => setPressedCodes([]),
+    clear: () => {
+      setObservedPressedCodes([]);
+      setCapturedPressedCodes([]);
+    },
   };
+}
+
+function appendCode(current: string[], code: string): string[] {
+  return current.includes(code) ? current : [...current, code];
 }

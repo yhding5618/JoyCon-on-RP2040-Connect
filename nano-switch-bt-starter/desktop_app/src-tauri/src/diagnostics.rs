@@ -15,15 +15,7 @@ pub fn note_input_update(
     input: &LatestInputState,
     controller: &ControllerStateUi,
 ) {
-    push_log(
-        diagnostics,
-        format!(
-            "snapshot keys={} locked={} buttons=0x{:08x}",
-            input.pressed_codes.len(),
-            input.pointer_locked,
-            controller.buttons
-        ),
-    );
+    let _ = (diagnostics, input, controller);
 }
 
 pub fn note_serial_frames(

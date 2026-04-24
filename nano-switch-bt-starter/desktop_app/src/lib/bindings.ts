@@ -509,12 +509,12 @@ export function setBluetoothEnabledCommand(
   );
 }
 
-export function tapLeftJoyConButtonCommand(
+export function tapControllerButtonCommand(
   button: string,
-  durationMs = 250,
+  durationMs = 120,
 ): Promise<AppStateSnapshot> {
   return invokeTauri(
-    "tap_left_joycon_button",
+    "tap_controller_button",
     { button, durationMs },
     () => {
       const bits = testButtonBitsForControllerModel(
@@ -552,6 +552,8 @@ export function tapLeftJoyConButtonCommand(
     },
   );
 }
+
+export const tapLeftJoyConButtonCommand = tapControllerButtonCommand;
 
 function testButtonBitsForControllerModel(
   controllerModel: ControllerModel,
@@ -659,10 +661,6 @@ export function pushInputSnapshot(
           ...browserState.diagnostics,
           inputRateHz: snapshot.captureEnabled ? 60 : 0,
           outputRateHz: snapshot.captureEnabled ? 125 : 0,
-          recentLogs: [
-            `Snapshot ${snapshot.pressedCodes.length} keys locked=${snapshot.pointerLocked}`,
-            ...browserState.diagnostics.recentLogs,
-          ].slice(0, 8),
         },
       };
 

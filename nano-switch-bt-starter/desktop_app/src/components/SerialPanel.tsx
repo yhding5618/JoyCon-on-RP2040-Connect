@@ -11,12 +11,10 @@ type SerialPanelProps = {
   onConnect: () => void;
   onDisconnect: () => void;
   onGetStatus: () => void;
-  onGetEvents: () => void;
   onVirtualCableUnplug: () => void;
   onClearBonds: () => void;
   onSetControllerMode: (mode: ControllerModel) => void;
   onSetBluetoothEnabled: (enabled: boolean) => void;
-  onTapButton: (button: string) => void;
 };
 
 export function SerialPanel({
@@ -28,21 +26,17 @@ export function SerialPanel({
   onConnect,
   onDisconnect,
   onGetStatus,
-  onGetEvents,
   onVirtualCableUnplug,
   onClearBonds,
   onSetControllerMode,
   onSetBluetoothEnabled,
-  onTapButton,
 }: SerialPanelProps) {
   const isConnected = serial.connectionState === "Connected";
   const bluetoothEnabled = serial.lastStatus?.bluetoothEnabled === 1;
   const firmwareMode = serial.lastStatus
     ? controllerModelFromStatus(serial.lastStatus.controllerMode)
     : null;
-  const canSendTestTap = !loading && isConnected;
   const canSwitchMode = !loading && isConnected && !bluetoothEnabled;
-  const testButtons = directTestButtons(controllerModel);
 
   return (
     <Panel
@@ -104,9 +98,6 @@ export function SerialPanel({
           </button>
           <button disabled={loading} onClick={onGetStatus}>
             Refresh Status
-          </button>
-          <button disabled={loading} onClick={onGetEvents}>
-            Dump Events
           </button>
           <button disabled={loading} onClick={onVirtualCableUnplug}>
             Unplug Virtual Cable
@@ -192,21 +183,6 @@ export function SerialPanel({
             </div>
           </div>
         ) : null}
-
-        <div>
-          <p className="stat-label">Direct Test Tap</p>
-          <div className="button-row">
-            {testButtons.map((button) => (
-              <button
-                disabled={!canSendTestTap}
-                key={button}
-                onClick={() => onTapButton(button)}
-              >
-                {button.toUpperCase()}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
     </Panel>
   );
@@ -233,27 +209,4 @@ function controllerModelLabel(model: ControllerModel): string {
     return "Joy-Con Right";
   }
   return "Switch Pro Controller";
-}
-
-function directTestButtons(controllerModel: ControllerModel): string[] {
-  if (controllerModel === "RightJoyCon") {
-    return ["a", "b", "x", "y", "sl", "sr", "r", "zr", "plus", "home"];
-  }
-  if (controllerModel === "ProController") {
-    return [
-      "a",
-      "b",
-      "x",
-      "y",
-      "l",
-      "r",
-      "zl",
-      "zr",
-      "minus",
-      "plus",
-      "capture",
-      "home",
-    ];
-  }
-  return ["a", "b", "x", "y", "sl", "sr", "l", "zl", "minus", "capture"];
 }

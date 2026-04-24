@@ -1,4 +1,7 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, RwLock,
+};
 use std::thread;
 use std::time::Duration;
 
@@ -19,15 +22,21 @@ const OUTPUT_ERROR_BACKOFF_MS: u64 = 100;
 pub struct ManagedAppState {
     inner: Arc<RwLock<AppStateSnapshot>>,
     worker: SerialWorkerHandle,
+    control_in_flight: Arc<AtomicBool>,
 }
 
 impl ManagedAppState {
     pub fn new() -> Self {
         let inner = Arc::new(RwLock::new(initial_state()));
         let worker = SerialWorkerHandle::spawn();
-        spawn_output_loop(inner.clone(), worker.clone());
+        let control_in_flight = Arc::new(AtomicBool::new(false));
+        spawn_output_loop(inner.clone(), worker.clone(), control_in_flight.clone());
 
-        Self { inner, worker }
+        Self {
+            inner,
+            worker,
+            control_in_flight,
+        }
     }
 
     pub fn snapshot(&self) -> AppStateSnapshot {
@@ -42,14 +51,52 @@ impl ManagedAppState {
     pub fn request_worker(&self, command: WorkerCommand) -> Result<WorkerReply, String> {
         self.worker.request(command)
     }
+
+    pub async fn request_worker_async(
+        &self,
+        command: WorkerCommand,
+    ) -> Result<WorkerReply, String> {
+        let worker = self.worker.clone();
+        tauri::async_runtime::spawn_blocking(move || worker.request(command))
+            .await
+            .map_err(|error| format!("serial worker task failed: {error}"))?
+    }
+
+    pub async fn request_worker_control_async(
+        &self,
+        command: WorkerCommand,
+    ) -> Result<WorkerReply, String> {
+        let worker = self.worker.clone();
+        let control_in_flight = self.control_in_flight.clone();
+        control_in_flight.store(true, Ordering::Release);
+
+        let result = tauri::async_runtime::spawn_blocking(move || worker.request(command)).await;
+        self.control_in_flight.store(false, Ordering::Release);
+        result.map_err(|error| format!("serial worker task failed: {error}"))?
+    }
 }
 
-fn spawn_output_loop(inner: Arc<RwLock<AppStateSnapshot>>, worker: SerialWorkerHandle) {
+impl Clone for ManagedAppState {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            worker: self.worker.clone(),
+            control_in_flight: self.control_in_flight.clone(),
+        }
+    }
+}
+
+fn spawn_output_loop(
+    inner: Arc<RwLock<AppStateSnapshot>>,
+    worker: SerialWorkerHandle,
+    control_in_flight: Arc<AtomicBool>,
+) {
     thread::spawn(move || {
         let mut was_streaming = false;
         let mut consecutive_output_errors = 0u8;
 
         loop {
+            let control_busy = control_in_flight.load(Ordering::Acquire);
             let (connected, capture_enabled, controller, output_rate_hz) = {
                 let snapshot = inner.read().expect("app state lock poisoned");
                 (
@@ -60,8 +107,8 @@ fn spawn_output_loop(inner: Arc<RwLock<AppStateSnapshot>>, worker: SerialWorkerH
                 )
             };
 
-            let send_neutral = connected && was_streaming && !capture_enabled;
-            let send_live_state = connected && capture_enabled;
+            let send_neutral = connected && was_streaming && !capture_enabled && !control_busy;
+            let send_live_state = connected && capture_enabled && !control_busy;
 
             if send_live_state || send_neutral {
                 let payload = if send_live_state {

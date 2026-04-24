@@ -1,7 +1,4 @@
-import { CapturePanel } from "./components/CapturePanel";
 import { ControllerPreview } from "./components/ControllerPreview";
-import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
-import { MappingPanel } from "./components/MappingPanel";
 import { SerialPanel } from "./components/SerialPanel";
 import { useControllerInput } from "./hooks/useControllerInput";
 
@@ -12,27 +9,23 @@ export default function App() {
     isLoading,
     error,
     captureEnabled,
-    setCaptureEnabled,
-    requestPointerLock,
-    releasePointerLock,
-    releaseAll,
-    surfaceRef,
     pendingAction,
+    keyboard,
+    directTapOverlay,
     selectSerialPort,
     refreshPorts,
     connectSerial,
     disconnectSerial,
     requestStatus,
-    requestEvents,
     requestVirtualCableUnplug,
     requestClearBonds,
     setControllerMode,
     setBluetoothEnabled,
-    tapLeftJoyConButton,
+    tapControllerButton,
   } = useControllerInput();
 
-  const activeBindingCount = Object.keys(appState.profile.activeProfile.bindings).length;
   const isBusy = isLoading || pendingAction !== null;
+  const visiblePressedCodes = captureEnabled ? keyboard.observedPressedCodes : [];
 
   return (
     <main className="app-shell">
@@ -53,12 +46,13 @@ export default function App() {
           >
             {captureEnabled ? "Capture Active" : "Capture Disabled"}
           </span>
-          <span className="hero-metric">{activeBindingCount} bindings</span>
           <span className="hero-metric">
             {appState.serial.connectionState}
           </span>
         </div>
       </header>
+
+      {error ? <div className="app-error">{error}</div> : null}
 
       <section className="layout-grid">
         <div className="column-stack">
@@ -71,32 +65,26 @@ export default function App() {
             onConnect={connectSerial}
             onDisconnect={disconnectSerial}
             onGetStatus={requestStatus}
-            onGetEvents={requestEvents}
             onVirtualCableUnplug={requestVirtualCableUnplug}
             onClearBonds={requestClearBonds}
             onSetControllerMode={setControllerMode}
             onSetBluetoothEnabled={setBluetoothEnabled}
-            onTapButton={tapLeftJoyConButton}
-          />
-          <CapturePanel
-            input={appState.input}
-            latestSnapshot={latestSnapshot}
-            captureEnabled={captureEnabled}
-            onSetCaptureEnabled={setCaptureEnabled}
-            onRequestPointerLock={requestPointerLock}
-            onReleasePointerLock={releasePointerLock}
-            onReleaseAll={releaseAll}
-            surfaceRef={surfaceRef}
           />
         </div>
 
         <div className="column-stack">
-          <MappingPanel
+          <ControllerPreview
             profile={appState.profile.activeProfile}
-            controllerModel={appState.profile.activeProfile.controllerModel}
+            controller={appState.controller}
+            latestSnapshot={latestSnapshot}
+            captureEnabled={captureEnabled}
+            observedPressedCodes={visiblePressedCodes}
+            directTapOverlay={directTapOverlay}
+            directTapAvailable={
+              appState.serial.connectionState === "Connected" && !isBusy
+            }
+            onTapControllerButton={tapControllerButton}
           />
-          <ControllerPreview controller={appState.controller} />
-          <DiagnosticsPanel diagnostics={appState.diagnostics} error={error} />
         </div>
       </section>
     </main>

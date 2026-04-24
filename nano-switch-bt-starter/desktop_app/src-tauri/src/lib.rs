@@ -32,6 +32,7 @@ pub fn run() {
             commands::clear_bonds,
             commands::set_controller_mode,
             commands::set_bluetooth_enabled,
+            commands::tap_controller_button,
             commands::tap_left_joycon_button
         ])
         .run(tauri::generate_context!())

@@ -10,7 +10,9 @@ use crate::bridge_protocol::{
 };
 use crate::model::{EventEntryUi, FrameMetaUi, SerialPortInfoUi, StatusPayloadUi};
 
-const CONNECT_SETTLE_DELAY: Duration = Duration::from_millis(1000);
+const CONNECT_SETTLE_DELAY: Duration = Duration::from_millis(150);
+const CONNECT_HANDSHAKE_WAIT: Duration = Duration::from_millis(1850);
+const CONNECT_STATUS_POLL_WAIT: Duration = Duration::from_millis(250);
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_millis(1000);
 const READ_POLL_TIMEOUT: Duration = Duration::from_millis(100);
 const STATUS_WAIT: Duration = Duration::from_millis(1000);
@@ -205,18 +207,32 @@ impl WorkerRuntime {
         self.port = Some(port);
 
         let connected_port_name = port_name.clone();
-        self.request_status()
-            .map(|(status, tx_frames, rx_frames)| WorkerReply::Connected {
-                port: connected_port_name,
-                baud,
-                status: Some(status),
-                tx_frames,
-                rx_frames,
-            })
-            .map_err(|error| {
-                self.disconnect();
-                format!("opened {port_name}, but bridge handshake failed: {error}")
-            })
+        let deadline = Instant::now() + CONNECT_HANDSHAKE_WAIT;
+        let mut last_error = None;
+
+        while Instant::now() < deadline {
+            match self.request_status_with_wait(CONNECT_STATUS_POLL_WAIT) {
+                Ok((status, tx_frames, rx_frames)) => {
+                    return Ok(WorkerReply::Connected {
+                        port: connected_port_name,
+                        baud,
+                        status: Some(status),
+                        tx_frames,
+                        rx_frames,
+                    });
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    thread::sleep(Duration::from_millis(40));
+                }
+            }
+        }
+
+        self.disconnect();
+        Err(format!(
+            "opened {port_name}, but bridge handshake failed: {}",
+            last_error.unwrap_or_else(|| "timed out waiting for STATUS".to_string())
+        ))
     }
 
     fn disconnect(&mut self) {
@@ -234,7 +250,8 @@ impl WorkerRuntime {
         payload: &[u8],
         wait: Duration,
     ) -> Result<WorkerReply, String> {
-        let (tx_frame, frames) = self.send_message(message_type, payload, wait)?;
+        let (tx_frame, frames) =
+            self.send_message_until(message_type, payload, wait, |frames| !frames.is_empty())?;
         let mut tx_frames = vec![tx_frame];
         let mut rx_frames = frames.iter().map(frame_meta).collect::<Vec<_>>();
         let status = match self.request_status() {
@@ -256,7 +273,19 @@ impl WorkerRuntime {
     fn request_status(
         &mut self,
     ) -> Result<(StatusPayloadUi, Vec<FrameMetaUi>, Vec<FrameMetaUi>), String> {
-        let (tx_frame, frames) = self.send_message(MessageType::GetStatus, &[], STATUS_WAIT)?;
+        self.request_status_with_wait(STATUS_WAIT)
+    }
+
+    fn request_status_with_wait(
+        &mut self,
+        wait: Duration,
+    ) -> Result<(StatusPayloadUi, Vec<FrameMetaUi>, Vec<FrameMetaUi>), String> {
+        let (tx_frame, frames) =
+            self.send_message_until(MessageType::GetStatus, &[], wait, |frames| {
+                frames
+                    .iter()
+                    .any(|frame| frame.header.message_type == MessageType::Status as u8)
+            })?;
         let status_frame = frames
             .iter()
             .find(|frame| frame.header.message_type == MessageType::Status as u8)
@@ -271,7 +300,12 @@ impl WorkerRuntime {
     fn request_events(
         &mut self,
     ) -> Result<(Vec<EventEntryUi>, Vec<FrameMetaUi>, Vec<FrameMetaUi>), String> {
-        let (tx_frame, frames) = self.send_message(MessageType::GetEvents, &[], EVENTS_WAIT)?;
+        let (tx_frame, frames) =
+            self.send_message_until(MessageType::GetEvents, &[], EVENTS_WAIT, |frames| {
+                frames
+                    .iter()
+                    .any(|frame| frame.header.message_type == MessageType::Events as u8)
+            })?;
         let mut events = Vec::new();
         let mut rx_frames = Vec::new();
 
@@ -308,12 +342,16 @@ impl WorkerRuntime {
         Ok((events, vec![tx_frame], rx_frames))
     }
 
-    fn send_message(
+    fn send_message_until<F>(
         &mut self,
         message_type: MessageType,
         payload: &[u8],
         wait: Duration,
-    ) -> Result<(FrameMetaUi, Vec<Frame>), String> {
+        is_done: F,
+    ) -> Result<(FrameMetaUi, Vec<Frame>), String>
+    where
+        F: Fn(&[Frame]) -> bool,
+    {
         let sequence = self.next_sequence();
         let frame = Frame::new(message_type, sequence, payload)
             .map_err(|error| format!("failed to build frame: {error}"))?;
@@ -327,7 +365,7 @@ impl WorkerRuntime {
 
         write_frame(port.as_mut(), &bytes, true)?;
 
-        let frames = read_frames(port.as_mut(), wait)?;
+        let frames = read_until(port.as_mut(), wait, is_done)?;
         Ok((meta, frames))
     }
 
@@ -379,26 +417,45 @@ fn write_frame(
     Ok(())
 }
 
-fn read_frames(port: &mut dyn SerialPort, wait: Duration) -> Result<Vec<Frame>, String> {
+fn read_until<F>(
+    port: &mut dyn SerialPort,
+    wait: Duration,
+    is_done: F,
+) -> Result<Vec<Frame>, String>
+where
+    F: Fn(&[Frame]) -> bool,
+{
     let original_timeout = port.timeout();
     port.set_timeout(READ_POLL_TIMEOUT)
         .map_err(|error| format!("failed to update serial timeout: {error}"))?;
 
     let result = (|| {
         let mut buffer = Vec::new();
+        let mut frames = Vec::new();
+        let mut parsed_count = 0usize;
         let mut chunk = [0u8; 256];
         let deadline = Instant::now() + wait;
 
         while Instant::now() < deadline {
             match port.read(&mut chunk) {
-                Ok(read) if read > 0 => buffer.extend_from_slice(&chunk[..read]),
+                Ok(read) if read > 0 => {
+                    buffer.extend_from_slice(&chunk[..read]);
+                    let parsed = scan_frames(&buffer);
+                    if parsed.len() > parsed_count {
+                        frames.extend(parsed[parsed_count..].iter().cloned());
+                        parsed_count = parsed.len();
+
+                        if is_done(&frames) {
+                            return Ok(frames);
+                        }
+                    }
+                }
                 Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::TimedOut => {}
                 Err(error) => return Err(format!("failed to read serial reply: {error}")),
             }
         }
 
-        let frames = scan_frames(&buffer);
         if !buffer.is_empty() && frames.is_empty() {
             return Err("reply bytes received but no valid frames were parsed".to_string());
         }

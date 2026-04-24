@@ -1,46 +1,45 @@
 import { Panel } from "./Panel";
+import { ControllerStage } from "./ControllerStage";
+import type { InputSnapshot } from "../models/input";
+import type { Profile } from "../models/profile";
 import type { ControllerStateUi } from "../models/ui";
 
 type ControllerPreviewProps = {
+  profile: Profile;
   controller: ControllerStateUi;
+  latestSnapshot: InputSnapshot;
+  captureEnabled: boolean;
+  observedPressedCodes: string[];
+  directTapOverlay: string[];
+  directTapAvailable: boolean;
+  onTapControllerButton: (button: string, durationMs?: number) => void;
 };
 
-export function ControllerPreview({ controller }: ControllerPreviewProps) {
+export function ControllerPreview({
+  profile,
+  controller,
+  latestSnapshot,
+  captureEnabled,
+  observedPressedCodes,
+  directTapOverlay,
+  directTapAvailable,
+  onTapControllerButton,
+}: ControllerPreviewProps) {
   return (
     <Panel
-      title="Controller Preview"
-      copy="This preview is already driven by Rust-side mapping so the UI is only reflecting backend state."
+      title="Controller Test Bench"
+      copy="Captured physical keys light the virtual keyboard and mapped controller controls; direct controller taps are available only while capture is off."
     >
-      <div className="preview-grid">
-        <div className="preview-box">
-          <p className="stat-label">Buttons</p>
-          <p className="stat-value mono-chip">
-            0x{controller.buttons.toString(16).padStart(8, "0")}
-          </p>
-        </div>
-        <div className="preview-box">
-          <p className="stat-label">Left Stick</p>
-          <p className="stat-value">
-            {controller.lx}, {controller.ly}
-          </p>
-        </div>
-        <div className="preview-box">
-          <p className="stat-label">Right Stick</p>
-          <p className="stat-value">
-            {controller.rx}, {controller.ry}
-          </p>
-        </div>
-        <div className="preview-box">
-          <p className="stat-label">Hat / Misc</p>
-          <p className="stat-value">
-            {controller.hat} / {controller.misc}
-          </p>
-        </div>
-        <div className="preview-box">
-          <p className="stat-label">Battery</p>
-          <p className="stat-value">{controller.batteryLevel}</p>
-        </div>
-      </div>
+      <ControllerStage
+        profile={profile}
+        controller={controller}
+        latestSnapshot={latestSnapshot}
+        captureEnabled={captureEnabled}
+        observedPressedCodes={observedPressedCodes}
+        directTapOverlay={directTapOverlay}
+        directTapAvailable={directTapAvailable}
+        onTapControllerButton={onTapControllerButton}
+      />
     </Panel>
   );
 }

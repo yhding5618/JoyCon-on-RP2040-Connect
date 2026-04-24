@@ -29,14 +29,21 @@ pub fn get_app_state_snapshot(state: State<'_, ManagedAppState>) -> AppStateSnap
 }
 
 #[tauri::command]
-pub fn set_capture_enabled(enabled: bool, state: State<'_, ManagedAppState>) -> AppStateSnapshot {
+pub async fn set_capture_enabled(
+    enabled: bool,
+    state: State<'_, ManagedAppState>,
+) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
     let released = if !enabled {
-        release_controller_state_if_needed(&state).ok().flatten()
+        release_controller_state_if_needed(&state)
+            .await
+            .ok()
+            .flatten()
     } else {
         None
     };
 
-    state.update(|app_state| {
+    Ok(state.update(|app_state| {
         app_state.input.capture_enabled = enabled;
         app_state.input.window_focused = enabled;
         if !enabled {
@@ -55,7 +62,7 @@ pub fn set_capture_enabled(enabled: bool, state: State<'_, ManagedAppState>) -> 
 
         sync_runtime_metrics(app_state);
         app_state.clone()
-    })
+    }))
 }
 
 #[tauri::command]
@@ -81,8 +88,14 @@ pub fn push_input_snapshot(
 }
 
 #[tauri::command]
-pub fn list_serial_ports(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
-    let ports = match state.request_worker(WorkerCommand::RefreshPorts)? {
+pub async fn list_serial_ports(
+    state: State<'_, ManagedAppState>,
+) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
+    let ports = match state
+        .request_worker_async(WorkerCommand::RefreshPorts)
+        .await?
+    {
         WorkerReply::Ports(ports) => ports,
         _ => return Err("unexpected serial worker response for port listing".to_string()),
     };
@@ -131,20 +144,24 @@ pub fn select_serial_port(
 }
 
 #[tauri::command]
-pub fn connect_serial(
+pub async fn connect_serial(
     port: String,
     baud: u32,
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
     state.update(|app_state| {
         app_state.serial.connection_state = ConnectionState::Connecting;
         app_state.serial.last_connect_error = None;
     });
 
-    let reply = match state.request_worker(WorkerCommand::Connect {
-        port: port.clone(),
-        baud,
-    }) {
+    let reply = match state
+        .request_worker_control_async(WorkerCommand::Connect {
+            port: port.clone(),
+            baud,
+        })
+        .await
+    {
         Ok(reply) => reply,
         Err(error) => {
             let message = error.clone();
@@ -188,9 +205,17 @@ pub fn connect_serial(
 }
 
 #[tauri::command]
-pub fn disconnect_serial(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
-    let released = release_controller_state_if_needed(&state).ok().flatten();
-    let _ = state.request_worker(WorkerCommand::Disconnect)?;
+pub async fn disconnect_serial(
+    state: State<'_, ManagedAppState>,
+) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
+    let released = release_controller_state_if_needed(&state)
+        .await
+        .ok()
+        .flatten();
+    let _ = state
+        .request_worker_control_async(WorkerCommand::Disconnect)
+        .await?;
 
     Ok(state.update(|app_state| {
         app_state.serial.connection_state = ConnectionState::Disconnected;
@@ -209,8 +234,11 @@ pub fn disconnect_serial(state: State<'_, ManagedAppState>) -> Result<AppStateSn
 }
 
 #[tauri::command]
-pub fn get_status(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
-    let reply = state.request_worker(WorkerCommand::GetStatus)?;
+pub async fn get_status(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
+    let reply = state
+        .request_worker_control_async(WorkerCommand::GetStatus)
+        .await?;
 
     match reply {
         WorkerReply::Status {
@@ -229,8 +257,11 @@ pub fn get_status(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot,
 }
 
 #[tauri::command]
-pub fn get_events(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
-    let reply = state.request_worker(WorkerCommand::GetEvents)?;
+pub async fn get_events(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
+    let reply = state
+        .request_worker_control_async(WorkerCommand::GetEvents)
+        .await?;
 
     match reply {
         WorkerReply::Events {
@@ -252,23 +283,32 @@ pub fn get_events(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot,
 }
 
 #[tauri::command]
-pub fn virtual_cable_unplug(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
-    let reply = state.request_worker(WorkerCommand::VirtualCableUnplug)?;
-    apply_command_ack(state, reply, "virtual cable unplug requested")
+pub async fn virtual_cable_unplug(
+    state: State<'_, ManagedAppState>,
+) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
+    let reply = state
+        .request_worker_control_async(WorkerCommand::VirtualCableUnplug)
+        .await?;
+    apply_command_ack(&state, reply, "virtual cable unplug requested")
 }
 
 #[tauri::command]
-pub fn clear_bonds(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
-    let reply = state.request_worker(WorkerCommand::ClearBonds)?;
-    apply_command_ack(state, reply, "clear bonds requested")
+pub async fn clear_bonds(state: State<'_, ManagedAppState>) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
+    let reply = state
+        .request_worker_control_async(WorkerCommand::ClearBonds)
+        .await?;
+    apply_command_ack(&state, reply, "clear bonds requested")
 }
 
 #[tauri::command]
-pub fn set_controller_mode(
+pub async fn set_controller_mode(
     mode: ControllerModel,
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
-    let _ = release_controller_state_if_needed(&state)?;
+    let state = state.inner().clone();
+    let _ = release_controller_state_if_needed(&state).await?;
     state.update(|app_state| {
         app_state.input.capture_enabled = false;
         app_state.input.release_all();
@@ -277,19 +317,26 @@ pub fn set_controller_mode(
     });
 
     let protocol_mode = controller_model_to_protocol_mode(mode);
-    let reply = state.request_worker(WorkerCommand::SetControllerMode(protocol_mode))?;
-    apply_command_ack(state, reply, format!("controller mode requested: {mode:?}"))
+    let reply = state
+        .request_worker_control_async(WorkerCommand::SetControllerMode(protocol_mode))
+        .await?;
+    apply_command_ack(
+        &state,
+        reply,
+        format!("controller mode requested: {mode:?}"),
+    )
 }
 
 #[tauri::command]
-pub fn set_bluetooth_enabled(
+pub async fn set_bluetooth_enabled(
     enabled: bool,
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
     let released = if enabled {
         None
     } else {
-        release_controller_state_if_needed(&state)?
+        release_controller_state_if_needed(&state).await?
     };
     if !enabled {
         state.update(|app_state| {
@@ -300,7 +347,9 @@ pub fn set_bluetooth_enabled(
         });
     }
 
-    let reply = state.request_worker(WorkerCommand::SetBluetoothEnabled(enabled))?;
+    let reply = state
+        .request_worker_control_async(WorkerCommand::SetBluetoothEnabled(enabled))
+        .await?;
     match reply {
         WorkerReply::CommandAck {
             status,
@@ -335,17 +384,38 @@ pub fn set_bluetooth_enabled(
 }
 
 #[tauri::command]
-pub fn tap_left_joycon_button(
+pub async fn tap_controller_button(
     button: String,
     duration_ms: Option<u64>,
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
+    tap_controller_button_impl(button, duration_ms, state.inner().clone()).await
+}
+
+#[tauri::command]
+pub async fn tap_left_joycon_button(
+    button: String,
+    duration_ms: Option<u64>,
+    state: State<'_, ManagedAppState>,
+) -> Result<AppStateSnapshot, String> {
+    tap_controller_button_impl(button, duration_ms, state.inner().clone()).await
+}
+
+async fn tap_controller_button_impl(
+    button: String,
+    duration_ms: Option<u64>,
+    state: ManagedAppState,
+) -> Result<AppStateSnapshot, String> {
+    let snapshot = state.snapshot();
+    if snapshot.input.capture_enabled {
+        return Err("direct tap is disabled while capture is active".to_string());
+    }
+
     let controller_model = state.snapshot().profile.active_profile.controller_model;
     let buttons = controller_button_bits(&button, controller_model)?;
-    let duration = Duration::from_millis(duration_ms.unwrap_or(250).clamp(25, 2000));
+    let duration = Duration::from_millis(duration_ms.unwrap_or(120).clamp(25, 2000));
 
     state.update(|app_state| {
-        app_state.input.capture_enabled = false;
         app_state.input.release_all();
         app_state.controller = ControllerStatePayload::default();
         sync_runtime_metrics(app_state);
@@ -356,10 +426,15 @@ pub fn tap_left_joycon_button(
         ..ControllerStatePayload::default()
     };
 
-    let press_reply = state.request_worker(WorkerCommand::SendState(press))?;
-    thread::sleep(duration);
-    let release_reply =
-        state.request_worker(WorkerCommand::SendState(ControllerStatePayload::default()))?;
+    let press_reply = state
+        .request_worker_control_async(WorkerCommand::SendState(press))
+        .await?;
+    tauri::async_runtime::spawn_blocking(move || thread::sleep(duration))
+        .await
+        .map_err(|error| format!("direct tap sleep failed: {error}"))?;
+    let release_reply = state
+        .request_worker_control_async(WorkerCommand::SendState(ControllerStatePayload::default()))
+        .await?;
 
     let snapshot = state.update(|app_state| -> Result<AppStateSnapshot, String> {
         apply_state_sent_reply(app_state, press_reply)?;
@@ -490,7 +565,7 @@ fn apply_state_sent_reply(
 }
 
 fn apply_command_ack(
-    state: State<'_, ManagedAppState>,
+    state: &ManagedAppState,
     reply: WorkerReply,
     message: impl Into<String>,
 ) -> Result<AppStateSnapshot, String> {
@@ -513,8 +588,8 @@ fn apply_command_ack(
     }
 }
 
-fn release_controller_state_if_needed(
-    state: &State<'_, ManagedAppState>,
+async fn release_controller_state_if_needed(
+    state: &ManagedAppState,
 ) -> Result<
     Option<(
         Vec<crate::model::FrameMetaUi>,
@@ -529,7 +604,10 @@ fn release_controller_state_if_needed(
         return Ok(None);
     }
 
-    match state.request_worker(WorkerCommand::SendState(ControllerStatePayload::default()))? {
+    match state
+        .request_worker_control_async(WorkerCommand::SendState(ControllerStatePayload::default()))
+        .await?
+    {
         WorkerReply::StateSent {
             tx_frames,
             rx_frames,
