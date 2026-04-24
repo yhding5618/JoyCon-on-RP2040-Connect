@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 #define SWITCH_ACK_SIMPLE 0x80u
 #define SWITCH_ACK_DEVICE_INFO 0x82u
@@ -72,6 +73,8 @@
 #define SWITCH_SPI_READ_MAX_BYTES 0x1Du
 #define SWITCH_MAX_BOND_DEVICES 16
 #define SWITCH_EVENT_RING_SIZE SB_EVENT_LOG_MAX_ENTRIES
+#define SWITCH_BD_ADDR_LEN 6u
+#define SWITCH_RECONNECT_TASK_STACK 3072u
 
 #define SWITCH_HID_STATUS_SUCCESS 0x00u
 #define SWITCH_HID_STATUS_ERROR 0x01u
@@ -111,7 +114,25 @@ typedef enum {
   SWITCH_HID_API_EVENT_CLEAR_BONDS_BEGIN = 0x05u,
   SWITCH_HID_API_EVENT_CLEAR_BONDS_DONE = 0x06u,
   SWITCH_HID_API_EVENT_REMOVE_BOND = 0x07u,
+  SWITCH_HID_API_EVENT_SAVE_HOST = 0x08u,
+  SWITCH_HID_API_EVENT_LOAD_SETTINGS = 0x09u,
+  SWITCH_HID_API_EVENT_RECONNECT_SKIP = 0x0Au,
+  SWITCH_HID_API_EVENT_DISCONNECT = 0x0Bu,
+  SWITCH_HID_API_EVENT_CLEAR_SAVED_HOST = 0x0Cu,
+  SWITCH_HID_API_EVENT_SAVE_MODE = 0x0Du,
+  SWITCH_HID_API_EVENT_SAVE_LOCAL_ADDR = 0x0Eu,
+  SWITCH_HID_API_EVENT_SCHEDULE_RECONNECT = 0x0Fu,
 } switch_hid_api_event_t;
+
+typedef enum {
+  SWITCH_RECONNECT_SKIP_NO_SAVED_HOST = 0x01u,
+  SWITCH_RECONNECT_SKIP_NO_BONDS = 0x02u,
+  SWITCH_RECONNECT_SKIP_BT_DISABLED = 0x03u,
+  SWITCH_RECONNECT_SKIP_ALREADY_CONNECTED = 0x04u,
+  SWITCH_RECONNECT_SKIP_STOPPING = 0x05u,
+  SWITCH_RECONNECT_SKIP_TASK_CREATE_FAILED = 0x06u,
+  SWITCH_RECONNECT_SKIP_STALE_TASK = 0x07u,
+} switch_reconnect_skip_reason_t;
 
 typedef enum {
   SWITCH_BT_IDENTITY_STAGE_AFTER_BASE_MAC = 0x01u,
@@ -150,6 +171,12 @@ typedef enum {
 static const uint8_t kPeripheralMinorClassGamepad = 0x02;
 static const uint8_t kNintendoBaseMacPrefix[3] = {0xD4u, 0xF0u, 0x57u};
 static const uint8_t kJoyConSdpSubclass = 0x08u;
+static const uint16_t kReconnectBackoffMs[] = {1000u, 3000u, 8000u, 15000u};
+static const char kSwitchHidNvsNamespace[] = "switch_hid";
+static const char kSwitchHidNvsKeyHostValid[] = "host_valid";
+static const char kSwitchHidNvsKeyHostBdAddr[] = "host_bdaddr";
+static const char kSwitchHidNvsKeyControllerMode[] = "ctrl_mode";
+static const char kSwitchHidNvsKeyLocalBdAddr[] = "local_bd";
 
 static const uint8_t kCurrentDescriptor[] SWITCH_HID_MAYBE_UNUSED = {
     0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x06, 0x01, 0xFF, 0x85, 0x21, 0x09, 0x21, 0x75,
@@ -266,6 +293,7 @@ static sb_status_payload_t s_status = {
 };
 static switch_controller_profile_t s_controller_profile = SWITCH_PROFILE_LEFT_JOYCON;
 static bool s_bluetooth_enabled = false;
+static bool s_bluetooth_stopping = false;
 static uint64_t s_last_report_us = 0;
 static uint8_t s_report_timer = 0;
 static uint8_t s_player_lights = 0;
@@ -274,6 +302,10 @@ static bool s_vibration_enabled = false;
 static bool s_shipment_low_power = false;
 static uint8_t s_intended_base_mac[6] = {0};
 static bool s_intended_base_mac_valid = false;
+static uint8_t s_saved_switch_host_bdaddr[SWITCH_BD_ADDR_LEN] = {0};
+static bool s_saved_switch_host_valid = false;
+static uint32_t s_reconnect_generation = 0u;
+static TaskHandle_t s_reconnect_task_handle = NULL;
 static sb_event_entry_t s_event_ring[SWITCH_EVENT_RING_SIZE];
 static size_t s_event_ring_head = 0u;
 static size_t s_event_ring_count = 0u;
@@ -375,6 +407,231 @@ static sb_controller_mode_t switch_controller_mode(void) {
   return (sb_controller_mode_t)s_controller_profile;
 }
 
+static bool bd_addr_is_zero(const uint8_t bd_addr[SWITCH_BD_ADDR_LEN]) {
+  if (bd_addr == NULL) {
+    return true;
+  }
+
+  for (size_t i = 0; i < SWITCH_BD_ADDR_LEN; ++i) {
+    if (bd_addr[i] != 0u) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static esp_err_t save_controller_mode_to_nvs(sb_controller_mode_t mode) {
+  nvs_handle_t handle = 0;
+  esp_err_t err = nvs_open(kSwitchHidNvsNamespace, NVS_READWRITE, &handle);
+
+  if (err == ESP_OK) {
+    err = nvs_set_u8(handle, kSwitchHidNvsKeyControllerMode, (uint8_t)mode);
+  }
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  if (handle != 0) {
+    nvs_close(handle);
+  }
+
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_SAVE_MODE,
+               (uint8_t)err,
+               (uint8_t)mode);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "failed to persist controller mode=%u err=0x%X", (unsigned int)mode, err);
+  }
+  return err;
+}
+
+static esp_err_t save_switch_host_to_nvs(const uint8_t bd_addr[SWITCH_BD_ADDR_LEN],
+                                         const char *source) {
+  nvs_handle_t handle = 0;
+  esp_err_t err = ESP_OK;
+
+  if (bd_addr_is_zero(bd_addr)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  memcpy(s_saved_switch_host_bdaddr, bd_addr, SWITCH_BD_ADDR_LEN);
+  s_saved_switch_host_valid = true;
+
+  err = nvs_open(kSwitchHidNvsNamespace, NVS_READWRITE, &handle);
+  if (err == ESP_OK) {
+    err = nvs_set_blob(
+        handle, kSwitchHidNvsKeyHostBdAddr, bd_addr, SWITCH_BD_ADDR_LEN);
+  }
+  if (err == ESP_OK) {
+    err = nvs_set_u8(handle, kSwitchHidNvsKeyHostValid, 1u);
+  }
+  if (err == ESP_OK) {
+    err = nvs_set_u8(
+        handle, kSwitchHidNvsKeyControllerMode, (uint8_t)switch_controller_mode());
+  }
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  if (handle != 0) {
+    nvs_close(handle);
+  }
+
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_SAVE_HOST,
+               (uint8_t)err,
+               (uint8_t)switch_controller_mode());
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG,
+             "saved Switch host from %s: %02X:%02X:%02X:%02X:%02X:%02X profile=%u",
+             source != NULL ? source : "unknown",
+             bd_addr[0],
+             bd_addr[1],
+             bd_addr[2],
+             bd_addr[3],
+             bd_addr[4],
+             bd_addr[5],
+             (unsigned int)switch_controller_mode());
+  } else {
+    ESP_LOGW(TAG,
+             "failed to persist Switch host from %s err=0x%X",
+             source != NULL ? source : "unknown",
+             err);
+  }
+  return err;
+}
+
+static esp_err_t clear_saved_switch_host_from_nvs(const char *source) {
+  nvs_handle_t handle = 0;
+  esp_err_t err = ESP_OK;
+
+  memset(s_saved_switch_host_bdaddr, 0, sizeof(s_saved_switch_host_bdaddr));
+  s_saved_switch_host_valid = false;
+
+  err = nvs_open(kSwitchHidNvsNamespace, NVS_READWRITE, &handle);
+  if (err == ESP_OK) {
+    err = nvs_set_u8(handle, kSwitchHidNvsKeyHostValid, 0u);
+  }
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  if (handle != 0) {
+    nvs_close(handle);
+  }
+
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_CLEAR_SAVED_HOST,
+               (uint8_t)err,
+               0u);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "cleared saved Switch host from %s", source != NULL ? source : "unknown");
+  } else {
+    ESP_LOGW(TAG,
+             "failed to clear saved Switch host from %s err=0x%X",
+             source != NULL ? source : "unknown",
+             err);
+  }
+  return err;
+}
+
+static esp_err_t save_local_bdaddr_to_nvs(const char *source) {
+  const uint8_t *address = esp_bt_dev_get_address();
+  nvs_handle_t handle = 0;
+  esp_err_t err = ESP_OK;
+
+  if (bd_addr_is_zero(address)) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  err = nvs_open(kSwitchHidNvsNamespace, NVS_READWRITE, &handle);
+  if (err == ESP_OK) {
+    err = nvs_set_blob(handle, kSwitchHidNvsKeyLocalBdAddr, address, SWITCH_BD_ADDR_LEN);
+  }
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  if (handle != 0) {
+    nvs_close(handle);
+  }
+
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_SAVE_LOCAL_ADDR,
+               (uint8_t)err,
+               0u);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG,
+             "saved local BT address from %s: %02X:%02X:%02X:%02X:%02X:%02X",
+             source != NULL ? source : "unknown",
+             address[0],
+             address[1],
+             address[2],
+             address[3],
+             address[4],
+             address[5]);
+  }
+  return err;
+}
+
+static esp_err_t load_settings_from_nvs(void) {
+  nvs_handle_t handle = 0;
+  esp_err_t err = nvs_open(kSwitchHidNvsNamespace, NVS_READONLY, &handle);
+  uint8_t saved_mode = (uint8_t)SWITCH_PROFILE_LEFT_JOYCON;
+  uint8_t host_valid = 0u;
+  uint8_t host_bdaddr[SWITCH_BD_ADDR_LEN] = {0};
+  size_t host_len = sizeof(host_bdaddr);
+
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    record_event(SB_EVENT_SOURCE_HID_API,
+                 SWITCH_HID_API_EVENT_LOAD_SETTINGS,
+                 0u,
+                 0u);
+    return ESP_OK;
+  }
+  if (err != ESP_OK) {
+    record_event(SB_EVENT_SOURCE_HID_API,
+                 SWITCH_HID_API_EVENT_LOAD_SETTINGS,
+                 (uint8_t)err,
+                 0u);
+    return err;
+  }
+
+  err = nvs_get_u8(handle, kSwitchHidNvsKeyControllerMode, &saved_mode);
+  if (err == ESP_OK) {
+    switch_controller_profile_t saved_profile = SWITCH_PROFILE_LEFT_JOYCON;
+    if (switch_profile_from_mode((sb_controller_mode_t)saved_mode, &saved_profile)) {
+      s_controller_profile = saved_profile;
+    }
+  }
+
+  if (nvs_get_u8(handle, kSwitchHidNvsKeyHostValid, &host_valid) == ESP_OK &&
+      host_valid != 0u &&
+      nvs_get_blob(handle, kSwitchHidNvsKeyHostBdAddr, host_bdaddr, &host_len) == ESP_OK &&
+      host_len == SWITCH_BD_ADDR_LEN &&
+      !bd_addr_is_zero(host_bdaddr)) {
+    memcpy(s_saved_switch_host_bdaddr, host_bdaddr, sizeof(s_saved_switch_host_bdaddr));
+    s_saved_switch_host_valid = true;
+  } else {
+    memset(s_saved_switch_host_bdaddr, 0, sizeof(s_saved_switch_host_bdaddr));
+    s_saved_switch_host_valid = false;
+  }
+
+  nvs_close(handle);
+
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_LOAD_SETTINGS,
+               0u,
+               s_saved_switch_host_valid ? 1u : 0u);
+  ESP_LOGI(TAG,
+           "loaded settings: profile=%u saved_host_valid=%u saved_host=%02X:%02X:%02X:%02X:%02X:%02X",
+           (unsigned int)switch_controller_mode(),
+           s_saved_switch_host_valid ? 1u : 0u,
+           s_saved_switch_host_bdaddr[0],
+           s_saved_switch_host_bdaddr[1],
+           s_saved_switch_host_bdaddr[2],
+           s_saved_switch_host_bdaddr[3],
+           s_saved_switch_host_bdaddr[4],
+           s_saved_switch_host_bdaddr[5]);
+  return ESP_OK;
+}
+
 static const char *switch_controller_name(void) {
   switch (s_controller_profile) {
     case SWITCH_PROFILE_RIGHT_JOYCON:
@@ -442,6 +699,7 @@ static void log_bt_identity(const char *stage) {
   const esp_bluedroid_status_t bluedroid_status = esp_bluedroid_get_status();
   esp_err_t cod_err = ESP_ERR_INVALID_STATE;
   const uint16_t descriptor_len = (uint16_t)kSwitchJoyConApp.desc_list_len;
+  int bond_count = -1;
 
   if (address != NULL) {
     memcpy(bt_address, address, sizeof(bt_address));
@@ -464,6 +722,7 @@ static void log_bt_identity(const char *stage) {
     if (cod_err == ESP_OK) {
       identity_flags |= 0x04u;
     }
+    bond_count = esp_bt_gap_get_bond_device_num();
   }
 
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
@@ -527,6 +786,7 @@ static void log_bt_identity(const char *stage) {
            "BT_IDENTITY stage=%s bt_addr=%02X:%02X:%02X:%02X:%02X:%02X "
            "intended_base_mac=%02X:%02X:%02X:%02X:%02X:%02X "
            "profile=%u controller_type=0x%02X gap_name=\"%s\" "
+           "bond_count=%d saved_host_valid=%u saved_host=%02X:%02X:%02X:%02X:%02X:%02X "
            "cod_err=0x%02X cod_major=0x%02X cod_minor=0x%02X "
            "cod_service=0x%03X hid_service=\"%s\" description=\"%s\" provider=\"%s\" "
            "hid_subclass=0x%02X descriptor_len=%u",
@@ -546,6 +806,14 @@ static void log_bt_identity(const char *stage) {
            (unsigned int)switch_controller_mode(),
            (unsigned int)switch_controller_type(),
            switch_controller_name(),
+           bond_count,
+           s_saved_switch_host_valid ? 1u : 0u,
+           s_saved_switch_host_bdaddr[0],
+           s_saved_switch_host_bdaddr[1],
+           s_saved_switch_host_bdaddr[2],
+           s_saved_switch_host_bdaddr[3],
+           s_saved_switch_host_bdaddr[4],
+           s_saved_switch_host_bdaddr[5],
            (unsigned int)cod_err,
            (unsigned int)cod.major,
            (unsigned int)cod.minor,
@@ -587,7 +855,9 @@ static void configure_gap_identity(void) {
 
   name_err = esp_bt_dev_set_device_name(switch_controller_name());
   cod_err = esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
-  scan_err = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+  scan_err = esp_bt_gap_set_scan_mode(
+      ESP_BT_CONNECTABLE,
+      s_saved_switch_host_valid ? ESP_BT_NON_DISCOVERABLE : ESP_BT_GENERAL_DISCOVERABLE);
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
                SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_0,
                (uint8_t)name_err,
@@ -832,6 +1102,183 @@ static void note_gap_event(esp_bt_gap_cb_event_t event, uint8_t status, uint8_t 
   s_status.last_gap_status = status;
   s_status.last_gap_reason = reason;
   refresh_bond_device_count();
+}
+
+static int current_bond_device_count(void) {
+  if (!s_bluetooth_enabled || esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+    return 0;
+  }
+  return esp_bt_gap_get_bond_device_num();
+}
+
+static void log_reconnect_state(const char *source,
+                                bool register_in_use,
+                                const uint8_t *register_bdaddr) {
+  uint8_t local_bdaddr[SWITCH_BD_ADDR_LEN] = {0};
+  uint8_t register_addr[SWITCH_BD_ADDR_LEN] = {0};
+  const uint8_t *local_address = esp_bt_dev_get_address();
+  const int bond_count = current_bond_device_count();
+
+  if (local_address != NULL) {
+    memcpy(local_bdaddr, local_address, sizeof(local_bdaddr));
+  }
+  if (register_bdaddr != NULL) {
+    memcpy(register_addr, register_bdaddr, sizeof(register_addr));
+  }
+
+  ESP_LOGI(TAG,
+           "RECONNECT_STATE source=%s profile=%u local=%02X:%02X:%02X:%02X:%02X:%02X "
+           "bond_count=%d saved_host_valid=%u saved_host=%02X:%02X:%02X:%02X:%02X:%02X "
+           "register_in_use=%u register_bdaddr=%02X:%02X:%02X:%02X:%02X:%02X",
+           source != NULL ? source : "unknown",
+           (unsigned int)switch_controller_mode(),
+           local_bdaddr[0],
+           local_bdaddr[1],
+           local_bdaddr[2],
+           local_bdaddr[3],
+           local_bdaddr[4],
+           local_bdaddr[5],
+           bond_count,
+           s_saved_switch_host_valid ? 1u : 0u,
+           s_saved_switch_host_bdaddr[0],
+           s_saved_switch_host_bdaddr[1],
+           s_saved_switch_host_bdaddr[2],
+           s_saved_switch_host_bdaddr[3],
+           s_saved_switch_host_bdaddr[4],
+           s_saved_switch_host_bdaddr[5],
+           register_in_use ? 1u : 0u,
+           register_addr[0],
+           register_addr[1],
+           register_addr[2],
+           register_addr[3],
+           register_addr[4],
+           register_addr[5]);
+}
+
+static void record_reconnect_skip(switch_reconnect_skip_reason_t reason, uint8_t arg) {
+  record_event(SB_EVENT_SOURCE_HID_API, SWITCH_HID_API_EVENT_RECONNECT_SKIP, reason, arg);
+}
+
+static esp_err_t attempt_saved_switch_reconnect(uint8_t attempt_index) {
+  esp_bd_addr_t host_bdaddr;
+  const int bond_count = current_bond_device_count();
+
+  refresh_bond_device_count();
+
+  if (!s_bluetooth_enabled) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_BT_DISABLED, attempt_index);
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (s_bluetooth_stopping) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_STOPPING, attempt_index);
+    return ESP_ERR_INVALID_STATE;
+  }
+  if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) != 0u) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_ALREADY_CONNECTED, attempt_index);
+    return ESP_OK;
+  }
+  if (!s_saved_switch_host_valid || bd_addr_is_zero(s_saved_switch_host_bdaddr)) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_NO_SAVED_HOST, attempt_index);
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (bond_count <= 0) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_NO_BONDS, attempt_index);
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  memcpy(host_bdaddr, s_saved_switch_host_bdaddr, sizeof(host_bdaddr));
+  ESP_LOGI(TAG,
+           "RECONNECT_ATTEMPT attempt=%u profile=%u host=%02X:%02X:%02X:%02X:%02X:%02X bond_count=%d",
+           (unsigned int)attempt_index,
+           (unsigned int)switch_controller_mode(),
+           host_bdaddr[0],
+           host_bdaddr[1],
+           host_bdaddr[2],
+           host_bdaddr[3],
+           host_bdaddr[4],
+           host_bdaddr[5],
+           bond_count);
+
+  const esp_err_t connect_err = esp_bt_hid_device_connect(host_bdaddr);
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_CONNECT,
+               (uint8_t)connect_err,
+               attempt_index);
+  if (connect_err != ESP_OK) {
+    s_status.last_error = (uint8_t)connect_err;
+  }
+  return connect_err;
+}
+
+static void reconnect_task(void *arg) {
+  const uint32_t generation = (uint32_t)(uintptr_t)arg;
+
+  for (size_t i = 0; i < (sizeof(kReconnectBackoffMs) / sizeof(kReconnectBackoffMs[0])); ++i) {
+    vTaskDelay(pdMS_TO_TICKS(kReconnectBackoffMs[i]));
+
+    if (generation != s_reconnect_generation) {
+      record_reconnect_skip(SWITCH_RECONNECT_SKIP_STALE_TASK, (uint8_t)(i + 1u));
+      break;
+    }
+    if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) != 0u) {
+      record_reconnect_skip(SWITCH_RECONNECT_SKIP_ALREADY_CONNECTED, (uint8_t)(i + 1u));
+      break;
+    }
+
+    (void)attempt_saved_switch_reconnect((uint8_t)(i + 1u));
+  }
+
+  if (generation == s_reconnect_generation) {
+    s_reconnect_task_handle = NULL;
+  }
+  vTaskDelete(NULL);
+}
+
+static void schedule_saved_switch_reconnect(const char *source) {
+  const int bond_count = current_bond_device_count();
+  TaskHandle_t task_handle = NULL;
+  BaseType_t task_started = pdFALSE;
+
+  log_reconnect_state(source, false, NULL);
+
+  if (!s_bluetooth_enabled) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_BT_DISABLED, 0u);
+    return;
+  }
+  if (s_bluetooth_stopping) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_STOPPING, 0u);
+    return;
+  }
+  if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) != 0u) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_ALREADY_CONNECTED, 0u);
+    return;
+  }
+  if (!s_saved_switch_host_valid || bd_addr_is_zero(s_saved_switch_host_bdaddr)) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_NO_SAVED_HOST, 0u);
+    return;
+  }
+  if (bond_count <= 0) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_NO_BONDS, 0u);
+    return;
+  }
+
+  s_reconnect_generation++;
+  task_started = xTaskCreate(reconnect_task,
+                             "hid_reconnect",
+                             SWITCH_RECONNECT_TASK_STACK,
+                             (void *)(uintptr_t)s_reconnect_generation,
+                             tskIDLE_PRIORITY + 1u,
+                             &task_handle);
+  if (task_started != pdPASS) {
+    record_reconnect_skip(SWITCH_RECONNECT_SKIP_TASK_CREATE_FAILED, 0u);
+    return;
+  }
+
+  s_reconnect_task_handle = task_handle;
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_SCHEDULE_RECONNECT,
+               s_saved_switch_host_valid ? 1u : 0u,
+               clamp_u8_count(bond_count));
 }
 
 static uint8_t build_battery_and_connection(void) {
@@ -1498,22 +1945,20 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
       log_bt_identity("after_register_app_evt");
       s_status.last_hid_status = (uint8_t)param->register_app.status;
       if (param->register_app.status == ESP_HIDD_SUCCESS) {
+        refresh_bond_device_count();
         s_status.flags |= SB_STATUS_FLAG_HID_READY | SB_STATUS_FLAG_BT_READY;
         if (param->register_app.in_use) {
           s_status.flags |= SB_STATUS_FLAG_VIRTUAL_CABLE;
-          {
-            esp_err_t connect_err = esp_bt_hid_device_connect(param->register_app.bd_addr);
-            record_event(SB_EVENT_SOURCE_HID_API,
-                         SWITCH_HID_API_EVENT_CONNECT,
-                         (uint8_t)connect_err,
-                         0u);
-            if (connect_err != ESP_OK) {
-              s_status.last_error = (uint8_t)connect_err;
-            }
+          if (save_switch_host_to_nvs(param->register_app.bd_addr, "register_app") != ESP_OK) {
+            s_status.last_error = SWITCH_HID_STATUS_ERROR;
           }
         }
 
+        (void)save_local_bdaddr_to_nvs("register_app");
+        log_reconnect_state(
+            "register_app", param->register_app.in_use, param->register_app.bd_addr);
         configure_gap_identity();
+        schedule_saved_switch_reconnect("register_app");
       } else {
         s_status.last_error = (uint8_t)param->register_app.status;
       }
@@ -1525,6 +1970,13 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
                    (uint8_t)param->open.status,
                    (uint8_t)param->open.conn_status);
       note_hid_connection_open((uint8_t)param->open.status, (uint8_t)param->open.conn_status);
+      if (param->open.status == ESP_HIDD_SUCCESS &&
+          param->open.conn_status == ESP_HIDD_CONN_STATE_CONNECTED) {
+        s_reconnect_generation++;
+        if (save_switch_host_to_nvs(param->open.bd_addr, "open") != ESP_OK) {
+          s_status.last_error = SWITCH_HID_STATUS_ERROR;
+        }
+      }
       break;
 
     case ESP_HIDD_CLOSE_EVT:
@@ -1533,6 +1985,9 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
                    (uint8_t)param->close.status,
                    (uint8_t)param->close.conn_status);
       note_hid_connection_close((uint8_t)param->close.status, (uint8_t)param->close.conn_status);
+      if (param->close.status == ESP_HIDD_SUCCESS && !s_bluetooth_stopping) {
+        schedule_saved_switch_reconnect("close");
+      }
       break;
 
     case ESP_HIDD_SET_PROTOCOL_EVT:
@@ -1603,6 +2058,11 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
       s_status.last_hid_status = (uint8_t)param->vc_unplug.status;
       s_status.last_hid_conn_status = (uint8_t)param->vc_unplug.conn_status;
       s_status.flags &= (uint8_t)~SB_STATUS_FLAG_VIRTUAL_CABLE;
+      s_reconnect_generation++;
+      if (param->vc_unplug.status == ESP_HIDD_SUCCESS) {
+        (void)clear_saved_switch_host_from_nvs("vc_unplug_evt");
+        configure_gap_identity();
+      }
       break;
 
     default:
@@ -1624,9 +2084,13 @@ static esp_err_t stop_bluetooth(void) {
   esp_err_t first_error = ESP_OK;
 
   if (!s_bluetooth_enabled && (s_status.flags & SB_STATUS_FLAG_BT_POWERED) == 0u) {
+    s_bluetooth_stopping = false;
     sync_mode_status();
     return ESP_OK;
   }
+
+  s_bluetooth_stopping = true;
+  s_reconnect_generation++;
 
   record_event(SB_EVENT_SOURCE_BRIDGE,
                SB_MSG_SET_BLUETOOTH_ENABLED,
@@ -1634,8 +2098,8 @@ static esp_err_t stop_bluetooth(void) {
                (uint8_t)switch_controller_mode());
 
   if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) != 0u) {
-    esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
-    record_event(SB_EVENT_SOURCE_HID_API, SWITCH_HID_API_EVENT_VC_UNPLUG, (uint8_t)err, 0u);
+    esp_err_t err = esp_bt_hid_device_disconnect();
+    record_event(SB_EVENT_SOURCE_HID_API, SWITCH_HID_API_EVENT_DISCONNECT, (uint8_t)err, 0u);
     keep_first_shutdown_error(err, &first_error);
     vTaskDelay(pdMS_TO_TICKS(50));
   }
@@ -1670,6 +2134,7 @@ static esp_err_t stop_bluetooth(void) {
   }
 
   s_bluetooth_enabled = false;
+  s_bluetooth_stopping = false;
   s_intended_base_mac_valid = false;
   s_status.protocol_mode = 0;
   s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
@@ -1692,6 +2157,9 @@ static esp_err_t start_bluetooth(void) {
     sync_mode_status();
     return ESP_OK;
   }
+
+  s_bluetooth_stopping = false;
+  s_reconnect_generation++;
 
   record_event(SB_EVENT_SOURCE_BRIDGE,
                SB_MSG_SET_BLUETOOTH_ENABLED,
@@ -1744,6 +2212,7 @@ static esp_err_t start_bluetooth(void) {
     return err;
   }
   log_bt_identity("after_bluedroid_enable");
+  (void)save_local_bdaddr_to_nvs("bluedroid_enable");
 
   err = esp_bt_gap_register_callback(gap_callback);
   if (err != ESP_OK) {
@@ -1803,13 +2272,22 @@ esp_err_t switch_hid_init(void) {
 
   s_controller_profile = SWITCH_PROFILE_LEFT_JOYCON;
   s_bluetooth_enabled = false;
+  s_bluetooth_stopping = false;
   s_intended_base_mac_valid = false;
+  memset(s_saved_switch_host_bdaddr, 0, sizeof(s_saved_switch_host_bdaddr));
+  s_saved_switch_host_valid = false;
+  s_reconnect_generation++;
   s_status.flags = SB_STATUS_FLAG_BRIDGE_READY;
   s_status.protocol_mode = 0;
   s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
   s_status.battery_level = 8;
   s_status.last_hid_conn_status = 0;
   reset_controller_runtime_state();
+  err = load_settings_from_nvs();
+  if (err != ESP_OK) {
+    s_status.last_error = (uint8_t)err;
+    ESP_LOGW(TAG, "failed to load persisted settings err=0x%X", err);
+  }
   refresh_bond_device_count();
   sync_mode_status();
   return ESP_OK;
@@ -1838,6 +2316,13 @@ esp_err_t switch_hid_set_controller_mode(sb_controller_mode_t mode) {
   s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
   reset_controller_runtime_state();
   sync_mode_status();
+  {
+    esp_err_t save_err = save_controller_mode_to_nvs(mode);
+    if (save_err != ESP_OK) {
+      s_status.last_error = (uint8_t)save_err;
+      return save_err;
+    }
+  }
   ESP_LOGI(TAG,
            "controller profile set: mode=%u type=0x%02X name=\"%s\"",
            (unsigned int)switch_controller_mode(),
@@ -1957,9 +2442,16 @@ esp_err_t switch_hid_virtual_cable_unplug(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
+  s_reconnect_generation++;
   const esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
   record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_VIRTUAL_CABLE_UNPLUG, 0u, 0u);
   record_event(SB_EVENT_SOURCE_HID_API, SWITCH_HID_API_EVENT_VC_UNPLUG, (uint8_t)err, 0u);
+  if (err == ESP_OK) {
+    (void)clear_saved_switch_host_from_nvs("vc_unplug_cmd");
+    configure_gap_identity();
+  } else {
+    s_status.last_error = (uint8_t)err;
+  }
   return err;
 }
 
@@ -1973,6 +2465,22 @@ esp_err_t switch_hid_clear_all_bonds(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
+  s_reconnect_generation++;
+  (void)clear_saved_switch_host_from_nvs("clear_bonds");
+
+  if ((s_status.flags & (SB_STATUS_FLAG_CONNECTED | SB_STATUS_FLAG_VIRTUAL_CABLE)) != 0u) {
+    esp_err_t unplug_err = esp_bt_hid_device_virtual_cable_unplug();
+    record_event(SB_EVENT_SOURCE_HID_API,
+                 SWITCH_HID_API_EVENT_VC_UNPLUG,
+                 (uint8_t)unplug_err,
+                 0u);
+    if (unplug_err != ESP_OK) {
+      result = unplug_err;
+      s_status.last_error = (uint8_t)unplug_err;
+    }
+    vTaskDelay(pdMS_TO_TICKS(150));
+  }
+
   record_event(SB_EVENT_SOURCE_HID_API,
                SWITCH_HID_API_EVENT_CLEAR_BONDS_BEGIN,
                clamp_u8_count(esp_bt_gap_get_bond_device_num()),
@@ -1984,6 +2492,11 @@ esp_err_t switch_hid_clear_all_bonds(void) {
 
     refresh_bond_device_count();
     if (device_count <= 0) {
+      record_event(SB_EVENT_SOURCE_HID_API,
+                   SWITCH_HID_API_EVENT_CLEAR_BONDS_DONE,
+                   (uint8_t)result,
+                   s_status.bond_device_count);
+      configure_gap_identity();
       return result;
     }
 
@@ -2018,5 +2531,6 @@ esp_err_t switch_hid_clear_all_bonds(void) {
                SWITCH_HID_API_EVENT_CLEAR_BONDS_DONE,
                (uint8_t)result,
                s_status.bond_device_count);
+  configure_gap_identity();
   return result;
 }
