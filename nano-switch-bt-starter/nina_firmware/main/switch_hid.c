@@ -1,6 +1,7 @@
 #include "switch_hid.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -9,6 +10,7 @@
 #include "esp_bt_main.h"
 #include "esp_gap_bt_api.h"
 #include "esp_hidd_api.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"
@@ -79,12 +81,31 @@
 #define SWITCH_HID_STATUS_SUCCESS 0x00u
 #define SWITCH_HID_STATUS_ERROR 0x01u
 
+#define NINA_PAIR_SLOT_MAGIC 0x53575052u
+#define NINA_PAIR_SLOT_VERSION 1u
+#define NINA_MODE_COUNT 3u
+#define NINA_NVS_NAMESPACE_MAX_LEN 15u
+
 #define SWITCH_HID_USE_JOYCONTROL_DESCRIPTOR 1
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
+#define SWITCH_HAS_BT_CONFIG_FILE_PATH_UPDATE 1
+#else
+#define SWITCH_HAS_BT_CONFIG_FILE_PATH_UPDATE 0
+#endif
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#define SWITCH_HAS_IFACE_MAC_ADDR_SET 1
+#else
+#define SWITCH_HAS_IFACE_MAC_ADDR_SET 0
+#endif
 
 #if defined(__GNUC__)
 #define SWITCH_HID_MAYBE_UNUSED __attribute__((unused))
+#define SWITCH_HID_PACKED __attribute__((packed))
 #else
 #define SWITCH_HID_MAYBE_UNUSED
+#define SWITCH_HID_PACKED
 #endif
 
 static const char *TAG = "switch_hid";
@@ -168,15 +189,41 @@ typedef enum {
   SWITCH_PROFILE_PRO_CONTROLLER = SB_CONTROLLER_MODE_PRO_CONTROLLER,
 } switch_controller_profile_t;
 
+typedef enum {
+  SWITCH_BT_STATE_OFF = 0,
+  SWITCH_BT_STATE_STARTING,
+  SWITCH_BT_STATE_PAIRABLE,
+  SWITCH_BT_STATE_RECONNECTING,
+  SWITCH_BT_STATE_CONNECTED,
+  SWITCH_BT_STATE_STOPPING,
+} switch_bt_state_t;
+
+typedef struct SWITCH_HID_PACKED {
+  uint32_t magic;
+  uint8_t version;
+  uint8_t mode;
+  uint8_t has_local_mac;
+  uint8_t has_host_addr;
+  uint8_t local_bt_mac[SWITCH_BD_ADDR_LEN];
+  uint8_t switch_bd_addr[SWITCH_BD_ADDR_LEN];
+  uint32_t crc32;
+} nina_pair_slot_t;
+
+typedef struct {
+  switch_controller_profile_t mode;
+  const char *app_nvs_ns;
+  const char *bt_bond_path;
+  const char *device_name;
+  const uint8_t *hid_descriptor;
+  size_t hid_descriptor_len;
+} nina_mode_cfg_t;
+
 static const uint8_t kPeripheralMinorClassGamepad = 0x02;
-static const uint8_t kNintendoBaseMacPrefix[3] = {0xD4u, 0xF0u, 0x57u};
 static const uint8_t kJoyConSdpSubclass = 0x08u;
 static const uint16_t kReconnectBackoffMs[] = {1000u, 3000u, 8000u, 15000u};
-static const char kSwitchHidNvsNamespace[] = "switch_hid";
-static const char kSwitchHidNvsKeyHostValid[] = "host_valid";
-static const char kSwitchHidNvsKeyHostBdAddr[] = "host_bdaddr";
-static const char kSwitchHidNvsKeyControllerMode[] = "ctrl_mode";
-static const char kSwitchHidNvsKeyLocalBdAddr[] = "local_bd";
+static const char kSwitchGlobalNvsNamespace[] = "sw_global";
+static const char kSwitchGlobalNvsKeyControllerMode[] = "ctrl_mode";
+static const char kSwitchModeNvsKeySlot[] = "slot";
 
 static const uint8_t kCurrentDescriptor[] SWITCH_HID_MAYBE_UNUSED = {
     0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x06, 0x01, 0xFF, 0x85, 0x21, 0x09, 0x21, 0x75,
@@ -240,6 +287,33 @@ static const esp_hidd_app_param_t kSwitchJoyConApp = {
     .desc_list_len = sizeof(SWITCH_HID_DESCRIPTOR),
 };
 
+static const nina_mode_cfg_t kNinaModeCfgs[NINA_MODE_COUNT] = {
+    [SWITCH_PROFILE_LEFT_JOYCON] = {
+        .mode = SWITCH_PROFILE_LEFT_JOYCON,
+        .app_nvs_ns = "sw_ljc",
+        .bt_bond_path = "bt_ljc",
+        .device_name = "Joy-Con (L)",
+        .hid_descriptor = SWITCH_HID_DESCRIPTOR,
+        .hid_descriptor_len = sizeof(SWITCH_HID_DESCRIPTOR),
+    },
+    [SWITCH_PROFILE_RIGHT_JOYCON] = {
+        .mode = SWITCH_PROFILE_RIGHT_JOYCON,
+        .app_nvs_ns = "sw_rjc",
+        .bt_bond_path = "bt_rjc",
+        .device_name = "Joy-Con (R)",
+        .hid_descriptor = SWITCH_HID_DESCRIPTOR,
+        .hid_descriptor_len = sizeof(SWITCH_HID_DESCRIPTOR),
+    },
+    [SWITCH_PROFILE_PRO_CONTROLLER] = {
+        .mode = SWITCH_PROFILE_PRO_CONTROLLER,
+        .app_nvs_ns = "sw_pro",
+        .bt_bond_path = "bt_pro",
+        .device_name = "Pro Controller",
+        .hid_descriptor = SWITCH_HID_DESCRIPTOR,
+        .hid_descriptor_len = sizeof(SWITCH_HID_DESCRIPTOR),
+    },
+};
+
 static const esp_hidd_qos_param_t kQos = {
     .service_type = 0,
     .token_rate = 0,
@@ -292,6 +366,9 @@ static sb_status_payload_t s_status = {
     .reserved1 = 0,
 };
 static switch_controller_profile_t s_controller_profile = SWITCH_PROFILE_LEFT_JOYCON;
+static nina_pair_slot_t s_active_pair_slot;
+static esp_hidd_app_param_t s_active_hid_app;
+static switch_bt_state_t s_bt_state = SWITCH_BT_STATE_OFF;
 static bool s_bluetooth_enabled = false;
 static bool s_bluetooth_stopping = false;
 static uint64_t s_last_report_us = 0;
@@ -420,12 +497,248 @@ static bool bd_addr_is_zero(const uint8_t bd_addr[SWITCH_BD_ADDR_LEN]) {
   return true;
 }
 
+static const nina_mode_cfg_t *nina_mode_cfg_for_profile(switch_controller_profile_t profile) {
+  if ((uint8_t)profile >= NINA_MODE_COUNT) {
+    return NULL;
+  }
+  return &kNinaModeCfgs[(uint8_t)profile];
+}
+
+static const nina_mode_cfg_t *active_mode_cfg(void) {
+  return nina_mode_cfg_for_profile(s_controller_profile);
+}
+
+static uint32_t nina_crc32(const uint8_t *data, size_t len) {
+  uint32_t crc = 0xFFFFFFFFu;
+
+  if (data == NULL && len != 0u) {
+    return 0u;
+  }
+
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8u; ++bit) {
+      const uint32_t mask = 0u - (crc & 1u);
+      crc = (crc >> 1u) ^ (0xEDB88320u & mask);
+    }
+  }
+
+  return ~crc;
+}
+
+static void nina_pair_slot_init_empty(switch_controller_profile_t mode, nina_pair_slot_t *slot) {
+  if (slot == NULL) {
+    return;
+  }
+
+  memset(slot, 0, sizeof(*slot));
+  slot->magic = NINA_PAIR_SLOT_MAGIC;
+  slot->version = NINA_PAIR_SLOT_VERSION;
+  slot->mode = (uint8_t)mode;
+  slot->crc32 = nina_crc32((const uint8_t *)slot, offsetof(nina_pair_slot_t, crc32));
+}
+
+static uint32_t nina_pair_slot_compute_crc(const nina_pair_slot_t *slot) {
+  if (slot == NULL) {
+    return 0u;
+  }
+  return nina_crc32((const uint8_t *)slot, offsetof(nina_pair_slot_t, crc32));
+}
+
+static bool nina_pair_slot_valid(const nina_pair_slot_t *slot,
+                                 switch_controller_profile_t expected_mode) {
+  if (slot == NULL) {
+    return false;
+  }
+  if (slot->magic != NINA_PAIR_SLOT_MAGIC ||
+      slot->version != NINA_PAIR_SLOT_VERSION ||
+      slot->mode != (uint8_t)expected_mode ||
+      slot->crc32 != nina_pair_slot_compute_crc(slot)) {
+    return false;
+  }
+  if (slot->has_local_mac > 1u || slot->has_host_addr > 1u) {
+    return false;
+  }
+  if (slot->has_local_mac != 0u && bd_addr_is_zero(slot->local_bt_mac)) {
+    return false;
+  }
+  if (slot->has_host_addr != 0u && bd_addr_is_zero(slot->switch_bd_addr)) {
+    return false;
+  }
+  return true;
+}
+
+static esp_err_t nina_pair_slot_load(switch_controller_profile_t mode, nina_pair_slot_t *out_slot) {
+  const nina_mode_cfg_t *cfg = nina_mode_cfg_for_profile(mode);
+  nvs_handle_t handle = 0;
+  esp_err_t err = ESP_OK;
+  nina_pair_slot_t loaded;
+  size_t len = sizeof(loaded);
+
+  if (cfg == NULL || out_slot == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nina_pair_slot_init_empty(mode, out_slot);
+  memset(&loaded, 0, sizeof(loaded));
+
+  err = nvs_open(cfg->app_nvs_ns, NVS_READONLY, &handle);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    return ESP_OK;
+  }
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  err = nvs_get_blob(handle, kSwitchModeNvsKeySlot, &loaded, &len);
+  nvs_close(handle);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    return ESP_OK;
+  }
+  if (err != ESP_OK) {
+    return err;
+  }
+  if (len != sizeof(loaded) || !nina_pair_slot_valid(&loaded, mode)) {
+    ESP_LOGW(TAG,
+             "[NINA_BT] ignoring invalid pair slot for mode=%u namespace=%s",
+             (unsigned int)mode,
+             cfg->app_nvs_ns);
+    return ESP_OK;
+  }
+
+  *out_slot = loaded;
+  return ESP_OK;
+}
+
+static esp_err_t nina_pair_slot_save(switch_controller_profile_t mode,
+                                     const nina_pair_slot_t *slot) {
+  const nina_mode_cfg_t *cfg = nina_mode_cfg_for_profile(mode);
+  nvs_handle_t handle = 0;
+  esp_err_t err = ESP_OK;
+  nina_pair_slot_t stored;
+
+  if (cfg == NULL || slot == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  stored = *slot;
+  stored.magic = NINA_PAIR_SLOT_MAGIC;
+  stored.version = NINA_PAIR_SLOT_VERSION;
+  stored.mode = (uint8_t)mode;
+  if (stored.has_local_mac == 0u) {
+    memset(stored.local_bt_mac, 0, sizeof(stored.local_bt_mac));
+  }
+  if (stored.has_host_addr == 0u) {
+    memset(stored.switch_bd_addr, 0, sizeof(stored.switch_bd_addr));
+  }
+  stored.crc32 = nina_pair_slot_compute_crc(&stored);
+
+  err = nvs_open(cfg->app_nvs_ns, NVS_READWRITE, &handle);
+  if (err == ESP_OK) {
+    err = nvs_set_blob(handle, kSwitchModeNvsKeySlot, &stored, sizeof(stored));
+  }
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  if (handle != 0) {
+    nvs_close(handle);
+  }
+  if (err == ESP_OK && mode == s_controller_profile) {
+    s_active_pair_slot = stored;
+  }
+  return err;
+}
+
+static esp_err_t nina_pair_slot_erase(switch_controller_profile_t mode) {
+  const nina_mode_cfg_t *cfg = nina_mode_cfg_for_profile(mode);
+  nvs_handle_t handle = 0;
+  esp_err_t err = ESP_OK;
+
+  if (cfg == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  err = nvs_open(cfg->app_nvs_ns, NVS_READWRITE, &handle);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    err = ESP_OK;
+  }
+  if (err == ESP_OK && handle != 0) {
+    err = nvs_erase_key(handle, kSwitchModeNvsKeySlot);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+      err = ESP_OK;
+    }
+  }
+  if (err == ESP_OK && handle != 0) {
+    err = nvs_commit(handle);
+  }
+  if (handle != 0) {
+    nvs_close(handle);
+  }
+  if (err == ESP_OK && mode == s_controller_profile) {
+    nina_pair_slot_init_empty(mode, &s_active_pair_slot);
+  }
+  return err;
+}
+
+static void apply_saved_host_from_active_slot(void) {
+  if (s_active_pair_slot.has_host_addr != 0u &&
+      !bd_addr_is_zero(s_active_pair_slot.switch_bd_addr)) {
+    memcpy(s_saved_switch_host_bdaddr,
+           s_active_pair_slot.switch_bd_addr,
+           sizeof(s_saved_switch_host_bdaddr));
+    s_saved_switch_host_valid = true;
+  } else {
+    memset(s_saved_switch_host_bdaddr, 0, sizeof(s_saved_switch_host_bdaddr));
+    s_saved_switch_host_valid = false;
+  }
+}
+
+static esp_err_t load_active_pair_slot_from_nvs(const char *source) {
+  esp_err_t err = nina_pair_slot_load(s_controller_profile, &s_active_pair_slot);
+
+  if (err != ESP_OK) {
+    record_event(SB_EVENT_SOURCE_HID_API,
+                 SWITCH_HID_API_EVENT_LOAD_SETTINGS,
+                 (uint8_t)err,
+                 (uint8_t)switch_controller_mode());
+    return err;
+  }
+
+  apply_saved_host_from_active_slot();
+  record_event(SB_EVENT_SOURCE_HID_API,
+               SWITCH_HID_API_EVENT_LOAD_SETTINGS,
+               0u,
+               s_saved_switch_host_valid ? 1u : 0u);
+  ESP_LOGI(TAG,
+           "[NINA_BT] loaded slot from %s: mode=%u namespace=%s saved_host=%s "
+           "%02X:%02X:%02X:%02X:%02X:%02X local_mac=%s "
+           "%02X:%02X:%02X:%02X:%02X:%02X",
+           source != NULL ? source : "unknown",
+           (unsigned int)switch_controller_mode(),
+           active_mode_cfg() != NULL ? active_mode_cfg()->app_nvs_ns : "?",
+           s_saved_switch_host_valid ? "yes" : "no",
+           s_saved_switch_host_bdaddr[0],
+           s_saved_switch_host_bdaddr[1],
+           s_saved_switch_host_bdaddr[2],
+           s_saved_switch_host_bdaddr[3],
+           s_saved_switch_host_bdaddr[4],
+           s_saved_switch_host_bdaddr[5],
+           s_active_pair_slot.has_local_mac != 0u ? "yes" : "no",
+           s_active_pair_slot.local_bt_mac[0],
+           s_active_pair_slot.local_bt_mac[1],
+           s_active_pair_slot.local_bt_mac[2],
+           s_active_pair_slot.local_bt_mac[3],
+           s_active_pair_slot.local_bt_mac[4],
+           s_active_pair_slot.local_bt_mac[5]);
+  return ESP_OK;
+}
+
 static esp_err_t save_controller_mode_to_nvs(sb_controller_mode_t mode) {
   nvs_handle_t handle = 0;
-  esp_err_t err = nvs_open(kSwitchHidNvsNamespace, NVS_READWRITE, &handle);
+  esp_err_t err = nvs_open(kSwitchGlobalNvsNamespace, NVS_READWRITE, &handle);
 
   if (err == ESP_OK) {
-    err = nvs_set_u8(handle, kSwitchHidNvsKeyControllerMode, (uint8_t)mode);
+    err = nvs_set_u8(handle, kSwitchGlobalNvsKeyControllerMode, (uint8_t)mode);
   }
   if (err == ESP_OK) {
     err = nvs_commit(handle);
@@ -446,7 +759,6 @@ static esp_err_t save_controller_mode_to_nvs(sb_controller_mode_t mode) {
 
 static esp_err_t save_switch_host_to_nvs(const uint8_t bd_addr[SWITCH_BD_ADDR_LEN],
                                          const char *source) {
-  nvs_handle_t handle = 0;
   esp_err_t err = ESP_OK;
 
   if (bd_addr_is_zero(bd_addr)) {
@@ -456,24 +768,9 @@ static esp_err_t save_switch_host_to_nvs(const uint8_t bd_addr[SWITCH_BD_ADDR_LE
   memcpy(s_saved_switch_host_bdaddr, bd_addr, SWITCH_BD_ADDR_LEN);
   s_saved_switch_host_valid = true;
 
-  err = nvs_open(kSwitchHidNvsNamespace, NVS_READWRITE, &handle);
-  if (err == ESP_OK) {
-    err = nvs_set_blob(
-        handle, kSwitchHidNvsKeyHostBdAddr, bd_addr, SWITCH_BD_ADDR_LEN);
-  }
-  if (err == ESP_OK) {
-    err = nvs_set_u8(handle, kSwitchHidNvsKeyHostValid, 1u);
-  }
-  if (err == ESP_OK) {
-    err = nvs_set_u8(
-        handle, kSwitchHidNvsKeyControllerMode, (uint8_t)switch_controller_mode());
-  }
-  if (err == ESP_OK) {
-    err = nvs_commit(handle);
-  }
-  if (handle != 0) {
-    nvs_close(handle);
-  }
+  s_active_pair_slot.has_host_addr = 1u;
+  memcpy(s_active_pair_slot.switch_bd_addr, bd_addr, sizeof(s_active_pair_slot.switch_bd_addr));
+  err = nina_pair_slot_save(s_controller_profile, &s_active_pair_slot);
 
   record_event(SB_EVENT_SOURCE_HID_API,
                SWITCH_HID_API_EVENT_SAVE_HOST,
@@ -500,22 +797,14 @@ static esp_err_t save_switch_host_to_nvs(const uint8_t bd_addr[SWITCH_BD_ADDR_LE
 }
 
 static esp_err_t clear_saved_switch_host_from_nvs(const char *source) {
-  nvs_handle_t handle = 0;
   esp_err_t err = ESP_OK;
 
   memset(s_saved_switch_host_bdaddr, 0, sizeof(s_saved_switch_host_bdaddr));
   s_saved_switch_host_valid = false;
 
-  err = nvs_open(kSwitchHidNvsNamespace, NVS_READWRITE, &handle);
-  if (err == ESP_OK) {
-    err = nvs_set_u8(handle, kSwitchHidNvsKeyHostValid, 0u);
-  }
-  if (err == ESP_OK) {
-    err = nvs_commit(handle);
-  }
-  if (handle != 0) {
-    nvs_close(handle);
-  }
+  s_active_pair_slot.has_host_addr = 0u;
+  memset(s_active_pair_slot.switch_bd_addr, 0, sizeof(s_active_pair_slot.switch_bd_addr));
+  err = nina_pair_slot_save(s_controller_profile, &s_active_pair_slot);
 
   record_event(SB_EVENT_SOURCE_HID_API,
                SWITCH_HID_API_EVENT_CLEAR_SAVED_HOST,
@@ -534,23 +823,15 @@ static esp_err_t clear_saved_switch_host_from_nvs(const char *source) {
 
 static esp_err_t save_local_bdaddr_to_nvs(const char *source) {
   const uint8_t *address = esp_bt_dev_get_address();
-  nvs_handle_t handle = 0;
   esp_err_t err = ESP_OK;
 
   if (bd_addr_is_zero(address)) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  err = nvs_open(kSwitchHidNvsNamespace, NVS_READWRITE, &handle);
-  if (err == ESP_OK) {
-    err = nvs_set_blob(handle, kSwitchHidNvsKeyLocalBdAddr, address, SWITCH_BD_ADDR_LEN);
-  }
-  if (err == ESP_OK) {
-    err = nvs_commit(handle);
-  }
-  if (handle != 0) {
-    nvs_close(handle);
-  }
+  s_active_pair_slot.has_local_mac = 1u;
+  memcpy(s_active_pair_slot.local_bt_mac, address, sizeof(s_active_pair_slot.local_bt_mac));
+  err = nina_pair_slot_save(s_controller_profile, &s_active_pair_slot);
 
   record_event(SB_EVENT_SOURCE_HID_API,
                SWITCH_HID_API_EVENT_SAVE_LOCAL_ADDR,
@@ -572,20 +853,10 @@ static esp_err_t save_local_bdaddr_to_nvs(const char *source) {
 
 static esp_err_t load_settings_from_nvs(void) {
   nvs_handle_t handle = 0;
-  esp_err_t err = nvs_open(kSwitchHidNvsNamespace, NVS_READONLY, &handle);
+  esp_err_t err = nvs_open(kSwitchGlobalNvsNamespace, NVS_READONLY, &handle);
   uint8_t saved_mode = (uint8_t)SWITCH_PROFILE_LEFT_JOYCON;
-  uint8_t host_valid = 0u;
-  uint8_t host_bdaddr[SWITCH_BD_ADDR_LEN] = {0};
-  size_t host_len = sizeof(host_bdaddr);
 
-  if (err == ESP_ERR_NVS_NOT_FOUND) {
-    record_event(SB_EVENT_SOURCE_HID_API,
-                 SWITCH_HID_API_EVENT_LOAD_SETTINGS,
-                 0u,
-                 0u);
-    return ESP_OK;
-  }
-  if (err != ESP_OK) {
+  if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
     record_event(SB_EVENT_SOURCE_HID_API,
                  SWITCH_HID_API_EVENT_LOAD_SETTINGS,
                  (uint8_t)err,
@@ -593,55 +864,29 @@ static esp_err_t load_settings_from_nvs(void) {
     return err;
   }
 
-  err = nvs_get_u8(handle, kSwitchHidNvsKeyControllerMode, &saved_mode);
+  if (err == ESP_OK) {
+    err = nvs_get_u8(handle, kSwitchGlobalNvsKeyControllerMode, &saved_mode);
+    nvs_close(handle);
+  }
+
   if (err == ESP_OK) {
     switch_controller_profile_t saved_profile = SWITCH_PROFILE_LEFT_JOYCON;
     if (switch_profile_from_mode((sb_controller_mode_t)saved_mode, &saved_profile)) {
       s_controller_profile = saved_profile;
     }
+  } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+    return err;
   }
 
-  if (nvs_get_u8(handle, kSwitchHidNvsKeyHostValid, &host_valid) == ESP_OK &&
-      host_valid != 0u &&
-      nvs_get_blob(handle, kSwitchHidNvsKeyHostBdAddr, host_bdaddr, &host_len) == ESP_OK &&
-      host_len == SWITCH_BD_ADDR_LEN &&
-      !bd_addr_is_zero(host_bdaddr)) {
-    memcpy(s_saved_switch_host_bdaddr, host_bdaddr, sizeof(s_saved_switch_host_bdaddr));
-    s_saved_switch_host_valid = true;
-  } else {
-    memset(s_saved_switch_host_bdaddr, 0, sizeof(s_saved_switch_host_bdaddr));
-    s_saved_switch_host_valid = false;
-  }
-
-  nvs_close(handle);
-
-  record_event(SB_EVENT_SOURCE_HID_API,
-               SWITCH_HID_API_EVENT_LOAD_SETTINGS,
-               0u,
-               s_saved_switch_host_valid ? 1u : 0u);
-  ESP_LOGI(TAG,
-           "loaded settings: profile=%u saved_host_valid=%u saved_host=%02X:%02X:%02X:%02X:%02X:%02X",
-           (unsigned int)switch_controller_mode(),
-           s_saved_switch_host_valid ? 1u : 0u,
-           s_saved_switch_host_bdaddr[0],
-           s_saved_switch_host_bdaddr[1],
-           s_saved_switch_host_bdaddr[2],
-           s_saved_switch_host_bdaddr[3],
-           s_saved_switch_host_bdaddr[4],
-           s_saved_switch_host_bdaddr[5]);
-  return ESP_OK;
+  return load_active_pair_slot_from_nvs("settings");
 }
 
 static const char *switch_controller_name(void) {
-  switch (s_controller_profile) {
-    case SWITCH_PROFILE_RIGHT_JOYCON:
-      return "Joy-Con (R)";
-    case SWITCH_PROFILE_PRO_CONTROLLER:
-      return "Pro Controller";
-    case SWITCH_PROFILE_LEFT_JOYCON:
-    default:
-      return "Joy-Con (L)";
+  const nina_mode_cfg_t *cfg = active_mode_cfg();
+  if (cfg != NULL && cfg->device_name != NULL) {
+    return cfg->device_name;
   }
+  return "Joy-Con (L)";
 }
 
 static uint8_t switch_controller_type(void) {
@@ -664,21 +909,10 @@ static bool switch_profile_has_right_side(void) {
   return s_controller_profile != SWITCH_PROFILE_LEFT_JOYCON;
 }
 
-static uint8_t active_mac_suffix_xor(void) {
-  switch (s_controller_profile) {
-    case SWITCH_PROFILE_RIGHT_JOYCON:
-      return 0x01u;
-    case SWITCH_PROFILE_PRO_CONTROLLER:
-      return 0x02u;
-    case SWITCH_PROFILE_LEFT_JOYCON:
-    default:
-      return 0x00u;
-  }
-}
-
 static void sync_mode_status(void) {
   s_status.controller_mode = (uint8_t)switch_controller_mode();
   s_status.bluetooth_enabled = s_bluetooth_enabled ? 1u : 0u;
+  s_status.reserved0 = (uint8_t)s_bt_state;
   if (s_bluetooth_enabled) {
     s_status.flags |= SB_STATUS_FLAG_BT_POWERED;
   } else {
@@ -695,16 +929,18 @@ static void log_bt_identity(const char *stage) {
   uint8_t base_mac[6] = {0};
   esp_bt_cod_t cod = {0};
   uint8_t identity_flags = 0u;
+  const nina_mode_cfg_t *cfg = active_mode_cfg();
   const uint8_t *address = esp_bt_dev_get_address();
   const esp_bluedroid_status_t bluedroid_status = esp_bluedroid_get_status();
   esp_err_t cod_err = ESP_ERR_INVALID_STATE;
-  const uint16_t descriptor_len = (uint16_t)kSwitchJoyConApp.desc_list_len;
+  const uint16_t descriptor_len =
+      (uint16_t)(cfg != NULL ? cfg->hid_descriptor_len : kSwitchJoyConApp.desc_list_len);
   int bond_count = -1;
 
   if (address != NULL) {
     memcpy(bt_address, address, sizeof(bt_address));
     identity_flags |= 0x01u;
-    if (memcmp(bt_address, kNintendoBaseMacPrefix, sizeof(kNintendoBaseMacPrefix)) == 0) {
+    if ((bt_address[0] & 0x03u) == 0x02u) {
       identity_flags |= 0x08u;
     }
   }
@@ -712,7 +948,7 @@ static void log_bt_identity(const char *stage) {
   if (s_intended_base_mac_valid) {
     memcpy(base_mac, s_intended_base_mac, sizeof(base_mac));
     identity_flags |= 0x02u;
-    if (memcmp(base_mac, kNintendoBaseMacPrefix, sizeof(kNintendoBaseMacPrefix)) == 0) {
+    if ((base_mac[0] & 0x03u) == 0x02u) {
       identity_flags |= 0x10u;
     }
   }
@@ -784,7 +1020,7 @@ static void log_bt_identity(const char *stage) {
 
   ESP_LOGI(TAG,
            "BT_IDENTITY stage=%s bt_addr=%02X:%02X:%02X:%02X:%02X:%02X "
-           "intended_base_mac=%02X:%02X:%02X:%02X:%02X:%02X "
+           "intended_bt_mac=%02X:%02X:%02X:%02X:%02X:%02X "
            "profile=%u controller_type=0x%02X gap_name=\"%s\" "
            "bond_count=%d saved_host_valid=%u saved_host=%02X:%02X:%02X:%02X:%02X:%02X "
            "cod_err=0x%02X cod_major=0x%02X cod_minor=0x%02X "
@@ -841,6 +1077,58 @@ static void schedule_delayed_bt_identity_log(void) {
                     NULL);
 }
 
+static bool nina_bt_is_bonded_to_host(const uint8_t bd_addr[SWITCH_BD_ADDR_LEN]) {
+  esp_bd_addr_t devices[SWITCH_MAX_BOND_DEVICES];
+  int device_count = 0;
+  esp_err_t err = ESP_OK;
+
+  if (bd_addr_is_zero(bd_addr) ||
+      !s_bluetooth_enabled ||
+      esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+    return false;
+  }
+
+  device_count = esp_bt_gap_get_bond_device_num();
+  if (device_count <= 0) {
+    return false;
+  }
+  if (device_count > SWITCH_MAX_BOND_DEVICES) {
+    device_count = SWITCH_MAX_BOND_DEVICES;
+  }
+
+  memset(devices, 0, sizeof(devices));
+  err = esp_bt_gap_get_bond_device_list(&device_count, devices);
+  if (err != ESP_OK) {
+    return false;
+  }
+
+  for (int i = 0; i < device_count; ++i) {
+    if (memcmp(devices[i], bd_addr, SWITCH_BD_ADDR_LEN) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static esp_err_t nina_bt_enter_pairing_mode(void) {
+  esp_err_t err = ESP_OK;
+
+  if (!s_bluetooth_enabled || esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+    s_status.last_error = (uint8_t)ESP_ERR_INVALID_STATE;
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  err = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+  if (err == ESP_OK) {
+    s_bt_state = SWITCH_BT_STATE_PAIRABLE;
+    sync_mode_status();
+    ESP_LOGI(TAG, "[NINA_BT] entering pairing mode");
+  } else {
+    s_status.last_error = (uint8_t)err;
+  }
+  return err;
+}
+
 static void configure_gap_identity(void) {
   esp_bt_cod_t cod = {
       .major = ESP_BT_COD_MAJOR_DEV_PERIPHERAL,
@@ -852,12 +1140,19 @@ static void configure_gap_identity(void) {
   esp_err_t name_err = ESP_OK;
   esp_err_t cod_err = ESP_OK;
   esp_err_t scan_err = ESP_OK;
+  const bool saved_host_bonded =
+      s_saved_switch_host_valid && nina_bt_is_bonded_to_host(s_saved_switch_host_bdaddr);
 
   name_err = esp_bt_dev_set_device_name(switch_controller_name());
   cod_err = esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
   scan_err = esp_bt_gap_set_scan_mode(
       ESP_BT_CONNECTABLE,
-      s_saved_switch_host_valid ? ESP_BT_NON_DISCOVERABLE : ESP_BT_GENERAL_DISCOVERABLE);
+      saved_host_bonded ? ESP_BT_NON_DISCOVERABLE : ESP_BT_GENERAL_DISCOVERABLE);
+  if (scan_err == ESP_OK && !saved_host_bonded &&
+      (s_status.flags & SB_STATUS_FLAG_CONNECTED) == 0u) {
+    s_bt_state = SWITCH_BT_STATE_PAIRABLE;
+    sync_mode_status();
+  }
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
                SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_0,
                (uint8_t)name_err,
@@ -867,6 +1162,10 @@ static void configure_gap_identity(void) {
                (uint8_t)scan_err,
                0u);
   log_bt_identity("after_gap_identity");
+  ESP_LOGI(TAG,
+           "[NINA_BT] saved host: %s bonded: %s",
+           s_saved_switch_host_valid ? "yes" : "no",
+           saved_host_bonded ? "yes" : "no");
   schedule_delayed_bt_identity_log();
 }
 
@@ -888,6 +1187,8 @@ static void note_hid_connection_open(uint8_t status, uint8_t conn_status) {
   if (status == SWITCH_HID_STATUS_SUCCESS &&
       conn_status == (uint8_t)ESP_HIDD_CONN_STATE_CONNECTED) {
     s_status.flags |= SB_STATUS_FLAG_CONNECTED | SB_STATUS_FLAG_VIRTUAL_CABLE;
+    s_bt_state = SWITCH_BT_STATE_CONNECTED;
+    sync_mode_status();
     s_last_report_us = 0;
   }
 }
@@ -900,6 +1201,10 @@ static void note_hid_connection_close(uint8_t status, uint8_t conn_status) {
     s_status.last_error = status;
   }
   s_status.flags &= (uint8_t)~SB_STATUS_FLAG_CONNECTED;
+  if (!s_bluetooth_stopping) {
+    s_bt_state = SWITCH_BT_STATE_PAIRABLE;
+    sync_mode_status();
+  }
 }
 
 static esp_err_t send_hid_report(esp_hidd_report_type_t report_type,
@@ -966,21 +1271,132 @@ static esp_err_t send_hid_report(esp_hidd_report_type_t report_type,
   return err;
 }
 
-static esp_err_t configure_nintendo_like_base_mac(void) {
-  uint8_t efuse_mac[6] = {0};
-  uint8_t base_mac[6] = {0};
-  esp_err_t err = esp_efuse_mac_get_default(efuse_mac);
+static void nina_identity_derive_mode_mac(const uint8_t base_mac[SWITCH_BD_ADDR_LEN],
+                                          switch_controller_profile_t mode,
+                                          uint8_t out_mac[SWITCH_BD_ADDR_LEN]) {
+  if (base_mac == NULL || out_mac == NULL) {
+    return;
+  }
 
+  memcpy(out_mac, base_mac, SWITCH_BD_ADDR_LEN);
+  out_mac[0] = (uint8_t)((out_mac[0] | 0x02u) & 0xFEu);
+  out_mac[5] ^= (uint8_t)(0x40u + (uint8_t)mode);
+  if (out_mac[5] < 4u) {
+    out_mac[5] = (uint8_t)(4u + (uint8_t)mode);
+  }
+}
+
+static esp_err_t nina_identity_get_or_create_local_mac(switch_controller_profile_t mode,
+                                                       uint8_t out_mac[SWITCH_BD_ADDR_LEN]) {
+  uint8_t efuse_mac[6] = {0};
+  esp_err_t err = ESP_OK;
+
+  if (out_mac == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (mode == s_controller_profile &&
+      s_active_pair_slot.has_local_mac != 0u &&
+      !bd_addr_is_zero(s_active_pair_slot.local_bt_mac)) {
+    memcpy(out_mac, s_active_pair_slot.local_bt_mac, SWITCH_BD_ADDR_LEN);
+    return ESP_OK;
+  }
+
+  err = esp_efuse_mac_get_default(efuse_mac);
+  if (err != ESP_OK) {
+    return err;
+  }
+  nina_identity_derive_mode_mac(efuse_mac, mode, out_mac);
+  return ESP_OK;
+}
+
+static uint8_t bt_mac_base_offset_for_idf_config(void) {
+#if defined(CONFIG_ESP32_UNIVERSAL_MAC_ADDRESSES) && CONFIG_ESP32_UNIVERSAL_MAC_ADDRESSES == 2
+  return 1u;
+#else
+  return 2u;
+#endif
+}
+
+static void subtract_from_mac_last_octets(uint8_t mac[SWITCH_BD_ADDR_LEN], uint8_t value) {
+  uint16_t borrow = value;
+
+  for (int i = (int)SWITCH_BD_ADDR_LEN - 1; i >= 0 && borrow != 0u; --i) {
+    const uint16_t current = mac[i];
+    if (current >= borrow) {
+      mac[i] = (uint8_t)(current - borrow);
+      borrow = 0u;
+    } else {
+      mac[i] = (uint8_t)(0x100u + current - borrow);
+      borrow = 1u;
+    }
+  }
+}
+
+static esp_err_t set_local_bt_mac_before_controller_init(
+    const uint8_t bt_mac[SWITCH_BD_ADDR_LEN]) {
+  if (bd_addr_is_zero(bt_mac)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+#if SWITCH_HAS_IFACE_MAC_ADDR_SET
+  return esp_iface_mac_addr_set(bt_mac, ESP_MAC_BT);
+#else
+  uint8_t base_mac[SWITCH_BD_ADDR_LEN];
+  memcpy(base_mac, bt_mac, sizeof(base_mac));
+  subtract_from_mac_last_octets(base_mac, bt_mac_base_offset_for_idf_config());
+  base_mac[0] = (uint8_t)((base_mac[0] | 0x02u) & 0xFEu);
+  return esp_base_mac_addr_set(base_mac);
+#endif
+}
+
+static esp_err_t configure_mode_local_bt_mac(void) {
+  uint8_t local_mac[SWITCH_BD_ADDR_LEN] = {0};
+  esp_err_t err = ESP_OK;
+
+  err = nina_identity_get_or_create_local_mac(s_controller_profile, local_mac);
   if (err != ESP_OK) {
     return err;
   }
 
-  memcpy(base_mac, efuse_mac, sizeof(base_mac));
-  memcpy(base_mac, kNintendoBaseMacPrefix, sizeof(kNintendoBaseMacPrefix));
-  base_mac[5] ^= active_mac_suffix_xor();
-  memcpy(s_intended_base_mac, base_mac, sizeof(s_intended_base_mac));
+  s_active_pair_slot.has_local_mac = 1u;
+  memcpy(s_active_pair_slot.local_bt_mac, local_mac, sizeof(s_active_pair_slot.local_bt_mac));
+  err = nina_pair_slot_save(s_controller_profile, &s_active_pair_slot);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  memcpy(s_intended_base_mac, local_mac, sizeof(s_intended_base_mac));
   s_intended_base_mac_valid = true;
-  return esp_base_mac_addr_set(base_mac);
+
+  ESP_LOGI(TAG,
+           "[NINA_BT] local BT MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+           local_mac[0],
+           local_mac[1],
+           local_mac[2],
+           local_mac[3],
+           local_mac[4],
+           local_mac[5]);
+  return set_local_bt_mac_before_controller_init(local_mac);
+}
+
+static esp_err_t configure_bluedroid_bond_path(const nina_mode_cfg_t *cfg) {
+  if (cfg == NULL || cfg->bt_bond_path == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (strlen(cfg->bt_bond_path) > NINA_NVS_NAMESPACE_MAX_LEN) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+#if SWITCH_HAS_BT_CONFIG_FILE_PATH_UPDATE
+  return esp_bt_config_file_path_update(cfg->bt_bond_path);
+#else
+  ESP_LOGW(TAG,
+           "[NINA_BT] ESP-IDF %s lacks esp_bt_config_file_path_update(); "
+           "bond namespace remains shared unless this API is backported",
+           IDF_VER);
+  return ESP_OK;
+#endif
 }
 
 static void copy_bt_address_be(uint8_t out[6]) {
@@ -1162,6 +1578,8 @@ static void record_reconnect_skip(switch_reconnect_skip_reason_t reason, uint8_t
 static esp_err_t attempt_saved_switch_reconnect(uint8_t attempt_index) {
   esp_bd_addr_t host_bdaddr;
   const int bond_count = current_bond_device_count();
+  const bool saved_host_bonded =
+      s_saved_switch_host_valid && nina_bt_is_bonded_to_host(s_saved_switch_host_bdaddr);
 
   refresh_bond_device_count();
 
@@ -1181,12 +1599,14 @@ static esp_err_t attempt_saved_switch_reconnect(uint8_t attempt_index) {
     record_reconnect_skip(SWITCH_RECONNECT_SKIP_NO_SAVED_HOST, attempt_index);
     return ESP_ERR_INVALID_STATE;
   }
-  if (bond_count <= 0) {
+  if (bond_count <= 0 || !saved_host_bonded) {
     record_reconnect_skip(SWITCH_RECONNECT_SKIP_NO_BONDS, attempt_index);
     return ESP_ERR_INVALID_STATE;
   }
 
   memcpy(host_bdaddr, s_saved_switch_host_bdaddr, sizeof(host_bdaddr));
+  s_bt_state = SWITCH_BT_STATE_RECONNECTING;
+  sync_mode_status();
   ESP_LOGI(TAG,
            "RECONNECT_ATTEMPT attempt=%u profile=%u host=%02X:%02X:%02X:%02X:%02X:%02X bond_count=%d",
            (unsigned int)attempt_index,
@@ -1230,12 +1650,17 @@ static void reconnect_task(void *arg) {
 
   if (generation == s_reconnect_generation) {
     s_reconnect_task_handle = NULL;
+    if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) == 0u) {
+      (void)nina_bt_enter_pairing_mode();
+    }
   }
   vTaskDelete(NULL);
 }
 
 static void schedule_saved_switch_reconnect(const char *source) {
   const int bond_count = current_bond_device_count();
+  const bool saved_host_bonded =
+      s_saved_switch_host_valid && nina_bt_is_bonded_to_host(s_saved_switch_host_bdaddr);
   TaskHandle_t task_handle = NULL;
   BaseType_t task_started = pdFALSE;
 
@@ -1255,14 +1680,19 @@ static void schedule_saved_switch_reconnect(const char *source) {
   }
   if (!s_saved_switch_host_valid || bd_addr_is_zero(s_saved_switch_host_bdaddr)) {
     record_reconnect_skip(SWITCH_RECONNECT_SKIP_NO_SAVED_HOST, 0u);
+    (void)nina_bt_enter_pairing_mode();
     return;
   }
-  if (bond_count <= 0) {
+  if (bond_count <= 0 || !saved_host_bonded) {
     record_reconnect_skip(SWITCH_RECONNECT_SKIP_NO_BONDS, 0u);
+    (void)nina_bt_enter_pairing_mode();
     return;
   }
 
   s_reconnect_generation++;
+  s_bt_state = SWITCH_BT_STATE_RECONNECTING;
+  sync_mode_status();
+  ESP_LOGI(TAG, "[NINA_BT] entering reconnect");
   task_started = xTaskCreate(reconnect_task,
                              "hid_reconnect",
                              SWITCH_RECONNECT_TASK_STACK,
@@ -1913,6 +2343,17 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
   }
 }
 
+static esp_hidd_app_param_t *active_hid_app_param(void) {
+  const nina_mode_cfg_t *cfg = active_mode_cfg();
+
+  s_active_hid_app = kSwitchJoyConApp;
+  if (cfg != NULL && cfg->hid_descriptor != NULL && cfg->hid_descriptor_len > 0u) {
+    s_active_hid_app.desc_list = (uint8_t *)cfg->hid_descriptor;
+    s_active_hid_app.desc_list_len = (int)cfg->hid_descriptor_len;
+  }
+  return &s_active_hid_app;
+}
+
 static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) {
   s_status.last_hid_event = (uint8_t)event;
 
@@ -1922,7 +2363,7 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
       s_status.last_hid_status = (uint8_t)param->init.status;
       if (param->init.status == ESP_HIDD_SUCCESS) {
         const esp_err_t register_err = esp_bt_hid_device_register_app(
-            (esp_hidd_app_param_t *)&kSwitchJoyConApp,
+            active_hid_app_param(),
             (esp_hidd_qos_param_t *)&kQos,
             (esp_hidd_qos_param_t *)&kQos);
         record_event(SB_EVENT_SOURCE_HID_API,
@@ -2085,11 +2526,14 @@ static esp_err_t stop_bluetooth(void) {
 
   if (!s_bluetooth_enabled && (s_status.flags & SB_STATUS_FLAG_BT_POWERED) == 0u) {
     s_bluetooth_stopping = false;
+    s_bt_state = SWITCH_BT_STATE_OFF;
     sync_mode_status();
     return ESP_OK;
   }
 
   s_bluetooth_stopping = true;
+  s_bt_state = SWITCH_BT_STATE_STOPPING;
+  sync_mode_status();
   s_reconnect_generation++;
 
   record_event(SB_EVENT_SOURCE_BRIDGE,
@@ -2135,6 +2579,7 @@ static esp_err_t stop_bluetooth(void) {
 
   s_bluetooth_enabled = false;
   s_bluetooth_stopping = false;
+  s_bt_state = SWITCH_BT_STATE_OFF;
   s_intended_base_mac_valid = false;
   s_status.protocol_mode = 0;
   s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
@@ -2152,13 +2597,20 @@ static esp_err_t stop_bluetooth(void) {
 
 static esp_err_t start_bluetooth(void) {
   esp_err_t err = ESP_OK;
+  const nina_mode_cfg_t *cfg = active_mode_cfg();
 
   if (s_bluetooth_enabled) {
     sync_mode_status();
     return ESP_OK;
   }
 
+  if (cfg == NULL) {
+    s_status.last_error = (uint8_t)ESP_ERR_INVALID_ARG;
+    return ESP_ERR_INVALID_ARG;
+  }
+
   s_bluetooth_stopping = false;
+  s_bt_state = SWITCH_BT_STATE_STARTING;
   s_reconnect_generation++;
 
   record_event(SB_EVENT_SOURCE_BRIDGE,
@@ -2166,9 +2618,31 @@ static esp_err_t start_bluetooth(void) {
                1u,
                (uint8_t)switch_controller_mode());
 
-  err = configure_nintendo_like_base_mac();
+  err = load_active_pair_slot_from_nvs("bt_start");
   if (err != ESP_OK) {
     s_status.last_error = (uint8_t)err;
+    s_bt_state = SWITCH_BT_STATE_OFF;
+    sync_mode_status();
+    return err;
+  }
+
+  ESP_LOGI(TAG, "[NINA_BT] selected mode: %s", cfg->device_name);
+  ESP_LOGI(TAG, "[NINA_BT] app namespace: %s", cfg->app_nvs_ns);
+  ESP_LOGI(TAG, "[NINA_BT] bond path: %s", cfg->bt_bond_path);
+
+  err = configure_mode_local_bt_mac();
+  if (err != ESP_OK) {
+    s_status.last_error = (uint8_t)err;
+    s_bt_state = SWITCH_BT_STATE_OFF;
+    sync_mode_status();
+    return err;
+  }
+
+  err = configure_bluedroid_bond_path(cfg);
+  if (err != ESP_OK) {
+    s_status.last_error = (uint8_t)err;
+    s_bt_state = SWITCH_BT_STATE_OFF;
+    sync_mode_status();
     return err;
   }
   log_bt_identity("after_base_mac");
@@ -2271,8 +2745,11 @@ esp_err_t switch_hid_init(void) {
   }
 
   s_controller_profile = SWITCH_PROFILE_LEFT_JOYCON;
+  nina_pair_slot_init_empty(s_controller_profile, &s_active_pair_slot);
+  memset(&s_active_hid_app, 0, sizeof(s_active_hid_app));
   s_bluetooth_enabled = false;
   s_bluetooth_stopping = false;
+  s_bt_state = SWITCH_BT_STATE_OFF;
   s_intended_base_mac_valid = false;
   memset(s_saved_switch_host_bdaddr, 0, sizeof(s_saved_switch_host_bdaddr));
   s_saved_switch_host_valid = false;
@@ -2315,6 +2792,13 @@ esp_err_t switch_hid_set_controller_mode(sb_controller_mode_t mode) {
   s_intended_base_mac_valid = false;
   s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
   reset_controller_runtime_state();
+  {
+    esp_err_t load_err = load_active_pair_slot_from_nvs("set_mode");
+    if (load_err != ESP_OK) {
+      s_status.last_error = (uint8_t)load_err;
+      return load_err;
+    }
+  }
   sync_mode_status();
   {
     esp_err_t save_err = save_controller_mode_to_nvs(mode);
@@ -2435,24 +2919,134 @@ void switch_hid_tick(void) {
   }
 }
 
-esp_err_t switch_hid_virtual_cable_unplug(void) {
+esp_err_t switch_hid_start_pairing_mode(void) {
+  esp_err_t err = ESP_OK;
+
+  record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_PAIRING_START, 0u, 0u);
   if (!s_bluetooth_enabled) {
-    record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_VIRTUAL_CABLE_UNPLUG, 0u, 0u);
     s_status.last_error = (uint8_t)ESP_ERR_INVALID_STATE;
     return ESP_ERR_INVALID_STATE;
   }
 
   s_reconnect_generation++;
-  const esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
-  record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_VIRTUAL_CABLE_UNPLUG, 0u, 0u);
-  record_event(SB_EVENT_SOURCE_HID_API, SWITCH_HID_API_EVENT_VC_UNPLUG, (uint8_t)err, 0u);
-  if (err == ESP_OK) {
-    (void)clear_saved_switch_host_from_nvs("vc_unplug_cmd");
-    configure_gap_identity();
-  } else {
+  err = clear_saved_switch_host_from_nvs("pairing_start");
+  if (err != ESP_OK) {
     s_status.last_error = (uint8_t)err;
+    return err;
   }
-  return err;
+  configure_gap_identity();
+  return nina_bt_enter_pairing_mode();
+}
+
+esp_err_t switch_hid_forget_pairing_current_mode(void) {
+  esp_err_t result = ESP_OK;
+  uint8_t saved_host[SWITCH_BD_ADDR_LEN] = {0};
+  const bool had_saved_host =
+      s_saved_switch_host_valid && !bd_addr_is_zero(s_saved_switch_host_bdaddr);
+
+  record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_PAIRING_FORGET_CURRENT_MODE, 0u, 0u);
+  ESP_LOGI(TAG, "[NINA_BT] forget pairing requested for current mode");
+
+  if (had_saved_host) {
+    memcpy(saved_host, s_saved_switch_host_bdaddr, sizeof(saved_host));
+  }
+
+  s_reconnect_generation++;
+
+  if (!s_bluetooth_enabled && had_saved_host) {
+    result = ESP_ERR_INVALID_STATE;
+    s_status.last_error = (uint8_t)ESP_ERR_INVALID_STATE;
+    ESP_LOGW(TAG,
+             "[NINA_BT] saved host was cleared but Bluetooth is off, so bond removal is pending");
+  }
+
+  if (s_bluetooth_enabled &&
+      (s_status.flags & (SB_STATUS_FLAG_CONNECTED | SB_STATUS_FLAG_VIRTUAL_CABLE)) != 0u) {
+    esp_err_t unplug_err = esp_bt_hid_device_virtual_cable_unplug();
+    record_event(SB_EVENT_SOURCE_HID_API,
+                 SWITCH_HID_API_EVENT_VC_UNPLUG,
+                 (uint8_t)unplug_err,
+                 0u);
+    if (unplug_err != ESP_OK) {
+      result = unplug_err;
+      s_status.last_error = (uint8_t)unplug_err;
+    }
+    vTaskDelay(pdMS_TO_TICKS(150));
+  }
+
+  if (s_bluetooth_enabled &&
+      had_saved_host &&
+      esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED &&
+      nina_bt_is_bonded_to_host(saved_host)) {
+    esp_err_t remove_err = esp_bt_gap_remove_bond_device(saved_host);
+    record_event(SB_EVENT_SOURCE_HID_API,
+                 SWITCH_HID_API_EVENT_REMOVE_BOND,
+                 (uint8_t)remove_err,
+                 0u);
+    if (remove_err != ESP_OK && result == ESP_OK) {
+      result = remove_err;
+      s_status.last_error = (uint8_t)remove_err;
+    }
+  }
+
+  {
+    esp_err_t erase_err = nina_pair_slot_erase(s_controller_profile);
+    if (erase_err != ESP_OK && result == ESP_OK) {
+      result = erase_err;
+      s_status.last_error = (uint8_t)erase_err;
+    }
+  }
+
+  memset(s_saved_switch_host_bdaddr, 0, sizeof(s_saved_switch_host_bdaddr));
+  s_saved_switch_host_valid = false;
+  if (s_bluetooth_enabled) {
+    refresh_bond_device_count();
+    configure_gap_identity();
+  }
+  sync_mode_status();
+  return result;
+}
+
+void switch_hid_get_pairing_info(sb_pairing_info_payload_t *info) {
+  nina_pair_slot_t slot;
+  esp_err_t err = ESP_OK;
+
+  if (info == NULL) {
+    return;
+  }
+
+  memset(info, 0, sizeof(*info));
+  info->mode = (uint8_t)switch_controller_mode();
+  info->bt_state = (uint8_t)s_bt_state;
+
+  err = nina_pair_slot_load(s_controller_profile, &slot);
+  if (err != ESP_OK) {
+    slot = s_active_pair_slot;
+  }
+
+  if (slot.has_local_mac == 0u || bd_addr_is_zero(slot.local_bt_mac)) {
+    uint8_t local_mac[SWITCH_BD_ADDR_LEN] = {0};
+    if (nina_identity_get_or_create_local_mac(s_controller_profile, local_mac) == ESP_OK) {
+      slot.has_local_mac = 1u;
+      memcpy(slot.local_bt_mac, local_mac, sizeof(slot.local_bt_mac));
+      (void)nina_pair_slot_save(s_controller_profile, &slot);
+    }
+  }
+
+  if (slot.has_local_mac != 0u) {
+    memcpy(info->local_bt_mac, slot.local_bt_mac, sizeof(info->local_bt_mac));
+  }
+  if (slot.has_host_addr != 0u && !bd_addr_is_zero(slot.switch_bd_addr)) {
+    info->has_saved_host = 1u;
+    memcpy(info->saved_switch_bd_addr,
+           slot.switch_bd_addr,
+           sizeof(info->saved_switch_bd_addr));
+    info->is_bonded = nina_bt_is_bonded_to_host(slot.switch_bd_addr) ? 1u : 0u;
+  }
+}
+
+esp_err_t switch_hid_virtual_cable_unplug(void) {
+  return switch_hid_forget_pairing_current_mode();
 }
 
 esp_err_t switch_hid_clear_all_bonds(void) {
@@ -2468,15 +3062,15 @@ esp_err_t switch_hid_clear_all_bonds(void) {
   s_reconnect_generation++;
   (void)clear_saved_switch_host_from_nvs("clear_bonds");
 
-  if ((s_status.flags & (SB_STATUS_FLAG_CONNECTED | SB_STATUS_FLAG_VIRTUAL_CABLE)) != 0u) {
-    esp_err_t unplug_err = esp_bt_hid_device_virtual_cable_unplug();
+  if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) != 0u) {
+    esp_err_t disconnect_err = esp_bt_hid_device_disconnect();
     record_event(SB_EVENT_SOURCE_HID_API,
-                 SWITCH_HID_API_EVENT_VC_UNPLUG,
-                 (uint8_t)unplug_err,
+                 SWITCH_HID_API_EVENT_DISCONNECT,
+                 (uint8_t)disconnect_err,
                  0u);
-    if (unplug_err != ESP_OK) {
-      result = unplug_err;
-      s_status.last_error = (uint8_t)unplug_err;
+    if (disconnect_err != ESP_OK) {
+      result = disconnect_err;
+      s_status.last_error = (uint8_t)disconnect_err;
     }
     vTaskDelay(pdMS_TO_TICKS(150));
   }

@@ -30,6 +30,10 @@ typedef enum {
   SB_MSG_CLEAR_BONDS = 0x12,
   SB_MSG_SET_CONTROLLER_MODE = 0x13,
   SB_MSG_SET_BLUETOOTH_ENABLED = 0x14,
+  SB_MSG_PAIRING_START = 0x15,
+  SB_MSG_PAIRING_FORGET_CURRENT_MODE = 0x16,
+  SB_MSG_PAIRING_GET_INFO = 0x17,
+  SB_MSG_PAIRING_INFO = 0x18,
 } sb_message_type_t;
 
 typedef enum {
@@ -149,6 +153,15 @@ typedef struct SB_PACKED {
   uint8_t reserved0;
   uint8_t reserved1;
 } sb_status_payload_t;
+
+typedef struct SB_PACKED {
+  uint8_t mode;
+  uint8_t local_bt_mac[6];
+  uint8_t has_saved_host;
+  uint8_t saved_switch_bd_addr[6];
+  uint8_t is_bonded;
+  uint8_t bt_state;
+} sb_pairing_info_payload_t;
 
 typedef struct SB_PACKED {
   uint32_t timestamp_ms;

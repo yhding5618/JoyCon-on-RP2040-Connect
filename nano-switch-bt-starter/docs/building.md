@@ -109,9 +109,25 @@ idf.py fullclean
 idf.py build
 ```
 
+## Per-Mode Pairing Persistence Note
+
+The firmware now stores app-owned pairing metadata in separate NVS namespaces:
+
+- `sw_ljc`
+- `sw_rjc`
+- `sw_pro`
+
+It also selects per-mode Bluedroid bond paths:
+
+- `bt_ljc`
+- `bt_rjc`
+- `bt_pro`
+
+`esp_bt_config_file_path_update()` is only available in newer ESP-IDF releases. On the original stock `v4.4.x` toolchain, the firmware logs a warning and still builds, but Bluedroid's internal bond store remains shared unless that API is backported or the project is built on an ESP-IDF version that provides it.
+
 ## Recommended Next Milestones
 
 1. Confirm the PC can send `SET_STATE` and the NINA can reply with `STATUS`.
 2. Confirm the generic HID starter enumerates to a normal Bluetooth host.
-3. Replace the generic HID descriptor with the Switch-specific path.
-4. Implement host output report handling and subcommand replies.
+3. Validate `pairing-info`, `pairing-start`, and `forget-current` over `host_tools/send_state.py`.
+4. Run the Left/Right/Pro pairing persistence test matrix against hardware.

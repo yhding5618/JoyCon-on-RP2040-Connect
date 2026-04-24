@@ -17,5 +17,8 @@ size_t switch_hid_copy_event_log(sb_event_entry_t *entries,
 void switch_hid_tick(void);
 esp_err_t switch_hid_virtual_cable_unplug(void);
 esp_err_t switch_hid_clear_all_bonds(void);
+esp_err_t switch_hid_start_pairing_mode(void);
+esp_err_t switch_hid_forget_pairing_current_mode(void);
+void switch_hid_get_pairing_info(sb_pairing_info_payload_t *info);
 
 #endif

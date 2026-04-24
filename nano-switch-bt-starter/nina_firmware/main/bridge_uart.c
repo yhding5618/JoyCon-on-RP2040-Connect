@@ -155,6 +155,13 @@ static void bridge_uart_send_events(void) {
   }
 }
 
+static void bridge_uart_send_pairing_info(void) {
+  sb_pairing_info_payload_t info;
+  memset(&info, 0, sizeof(info));
+  switch_hid_get_pairing_info(&info);
+  bridge_uart_send(SB_MSG_PAIRING_INFO, &info, sizeof(info));
+}
+
 static void bridge_uart_handle_frame(const sb_frame_t *frame) {
   switch (frame->header.type) {
     case SB_MSG_HELLO:
@@ -199,6 +206,20 @@ static void bridge_uart_handle_frame(const sb_frame_t *frame) {
         switch_hid_set_bluetooth_enabled(frame->payload[0] != 0u);
       }
       bridge_uart_send_status();
+      break;
+
+    case SB_MSG_PAIRING_START:
+      switch_hid_start_pairing_mode();
+      bridge_uart_send_status();
+      break;
+
+    case SB_MSG_PAIRING_FORGET_CURRENT_MODE:
+      switch_hid_forget_pairing_current_mode();
+      bridge_uart_send_status();
+      break;
+
+    case SB_MSG_PAIRING_GET_INFO:
+      bridge_uart_send_pairing_info();
       break;
 
     default:

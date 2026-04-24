@@ -53,7 +53,14 @@ Current message types:
 - `GET_STATUS`
 - `STATUS`
 - `SET_STATE`
-- `VIRTUAL_CABLE_UNPLUG`
+- `VIRTUAL_CABLE_UNPLUG` (compatibility alias for forgetting the active mode)
+- `CLEAR_BONDS`
+- `SET_CONTROLLER_MODE`
+- `SET_BLUETOOTH_ENABLED`
+- `PAIRING_START`
+- `PAIRING_FORGET_CURRENT_MODE`
+- `PAIRING_GET_INFO`
+- `PAIRING_INFO`
 
 `SET_STATE` carries a compact controller struct:
 
@@ -99,6 +106,10 @@ The NINA app now presents a `Left Joy-Con`-style Bluetooth HID scaffold instead 
 
 Implemented in the current scaffold:
 
+- independent NVS metadata slots for Left Joy-Con, Right Joy-Con, and Pro Controller modes
+- deterministic per-mode local Bluetooth MAC generation from the NINA factory MAC
+- per-mode Bluedroid bond-path selection when the active ESP-IDF provides `esp_bt_config_file_path_update()`
+- saved Switch host address tracking and conservative reconnect/pairable fallback
 - Joy-Con-style report IDs and a vendor-defined HID descriptor
 - `0x21` subcommand replies for common controller-management requests
 - `0x30`-style standard input reports
@@ -107,9 +118,9 @@ Implemented in the current scaffold:
 The next meaningful Switch-specific upgrades are:
 
 1. Verify the current Left Joy-Con scaffold against a real Switch pairing flow.
-2. Replace the sparse fake SPI/config image with stronger identity and persistence behavior.
+2. Validate the per-mode pairing/reconnect behavior on hardware across Left, Right, and Pro modes.
 3. Add more subcommands as needed once the Switch's exact probe order is observed.
-4. Add real IMU, rumble translation, and pairing persistence.
+4. Add real IMU and rumble translation.
 
 ## PC Tool
 

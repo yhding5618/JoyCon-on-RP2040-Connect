@@ -60,6 +60,10 @@ pub enum MessageType {
     ClearBonds = 0x12,
     SetControllerMode = 0x13,
     SetBluetoothEnabled = 0x14,
+    PairingStart = 0x15,
+    PairingForgetCurrentMode = 0x16,
+    PairingGetInfo = 0x17,
+    PairingInfo = 0x18,
 }
 
 impl TryFrom<u8> for MessageType {
@@ -77,6 +81,10 @@ impl TryFrom<u8> for MessageType {
             0x12 => Ok(Self::ClearBonds),
             0x13 => Ok(Self::SetControllerMode),
             0x14 => Ok(Self::SetBluetoothEnabled),
+            0x15 => Ok(Self::PairingStart),
+            0x16 => Ok(Self::PairingForgetCurrentMode),
+            0x17 => Ok(Self::PairingGetInfo),
+            0x18 => Ok(Self::PairingInfo),
             _ => Err(ProtocolError::UnknownMessageType(value)),
         }
     }
@@ -102,6 +110,8 @@ pub enum ProtocolError {
     InvalidStatusPayloadLength(usize),
     #[error("unexpected event dump payload length {0}")]
     InvalidEventDumpLength(usize),
+    #[error("unexpected pairing info payload length {0}")]
+    InvalidPairingInfoLength(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,6 +358,39 @@ impl StatusPayload {
             }),
             len => Err(ProtocolError::InvalidStatusPayloadLength(len)),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingInfoPayload {
+    pub mode: u8,
+    pub local_bt_mac: [u8; 6],
+    pub has_saved_host: bool,
+    pub saved_switch_bd_addr: [u8; 6],
+    pub is_bonded: bool,
+    pub bt_state: u8,
+}
+
+impl PairingInfoPayload {
+    pub fn decode(payload: &[u8]) -> Result<Self, ProtocolError> {
+        if payload.len() != 16 {
+            return Err(ProtocolError::InvalidPairingInfoLength(payload.len()));
+        }
+
+        let mut local_bt_mac = [0u8; 6];
+        local_bt_mac.copy_from_slice(&payload[1..7]);
+        let mut saved_switch_bd_addr = [0u8; 6];
+        saved_switch_bd_addr.copy_from_slice(&payload[8..14]);
+
+        Ok(Self {
+            mode: payload[0],
+            local_bt_mac,
+            has_saved_host: payload[7] != 0,
+            saved_switch_bd_addr,
+            is_bonded: payload[14] != 0,
+            bt_state: payload[15],
+        })
     }
 }
 

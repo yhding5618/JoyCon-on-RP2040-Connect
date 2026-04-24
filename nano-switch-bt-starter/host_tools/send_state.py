@@ -18,8 +18,13 @@ MSG_VC_UNPLUG = 0x11
 MSG_CLEAR_BONDS = 0x12
 MSG_SET_CONTROLLER_MODE = 0x13
 MSG_SET_BLUETOOTH_ENABLED = 0x14
+MSG_PAIRING_START = 0x15
+MSG_PAIRING_FORGET_CURRENT_MODE = 0x16
+MSG_PAIRING_GET_INFO = 0x17
+MSG_PAIRING_INFO = 0x18
 HEADER_SIZE = 8
 EVENT_PAYLOAD_SIZE = 48
+PAIRING_INFO_PAYLOAD_SIZE = 16
 
 BUTTON_NAMES = {
     "down": 1 << 0,
@@ -125,6 +130,14 @@ HID_API_EVENT_NAMES = {
     0x05: "CLEAR_BONDS_BEGIN",
     0x06: "CLEAR_BONDS_DONE",
     0x07: "REMOVE_BOND",
+    0x08: "SAVE_HOST",
+    0x09: "LOAD_SETTINGS",
+    0x0A: "RECONNECT_SKIP",
+    0x0B: "DISCONNECT",
+    0x0C: "CLEAR_SAVED_HOST",
+    0x0D: "SAVE_MODE",
+    0x0E: "SAVE_LOCAL_ADDR",
+    0x0F: "SCHEDULE_RECONNECT",
 }
 
 BRIDGE_EVENT_NAMES = {
@@ -133,6 +146,10 @@ BRIDGE_EVENT_NAMES = {
     MSG_CLEAR_BONDS: "CLEAR_BONDS",
     MSG_SET_CONTROLLER_MODE: "SET_CONTROLLER_MODE",
     MSG_SET_BLUETOOTH_ENABLED: "SET_BLUETOOTH_ENABLED",
+    MSG_PAIRING_START: "PAIRING_START",
+    MSG_PAIRING_FORGET_CURRENT_MODE: "PAIRING_FORGET_CURRENT_MODE",
+    MSG_PAIRING_GET_INFO: "PAIRING_GET_INFO",
+    MSG_PAIRING_INFO: "PAIRING_INFO",
 }
 
 BT_IDENTITY_EVENT_NAMES = {
@@ -161,6 +178,15 @@ BT_IDENTITY_STAGE_NAMES = {
     0x04: "after_register_app_evt",
     0x05: "after_gap_identity",
     0x06: "after_gap_identity_settled",
+}
+
+BT_STATE_NAMES = {
+    0x00: "off",
+    0x01: "starting",
+    0x02: "pairable",
+    0x03: "reconnecting",
+    0x04: "connected",
+    0x05: "stopping",
 }
 
 HID_PSM_NAMES = {
@@ -315,9 +341,9 @@ def describe_event(source: int, event: int, arg0: int, arg1: int) -> tuple[str, 
             if arg1 & 0x04:
                 flags.append("cod")
             if arg1 & 0x08:
-                flags.append("bt_addr_nintendo_prefix")
+                flags.append("bt_addr_local")
             if arg1 & 0x10:
-                flags.append("base_mac_nintendo_prefix")
+                flags.append("configured_mac_local")
             flag_text = "|".join(flags) or "none"
             stage = BT_IDENTITY_STAGE_NAMES.get(arg0, f"0x{arg0:02x}")
             return name, f"stage={stage} flags={flag_text}"
@@ -511,6 +537,36 @@ def decode_events_frame(frame: bytes) -> list[str] | None:
     return lines
 
 
+def format_bd_addr(addr: bytes) -> str:
+    return ":".join(f"{value:02X}" for value in addr)
+
+
+def decode_pairing_info_frame(frame: bytes) -> str | None:
+    if len(frame) != HEADER_SIZE + PAIRING_INFO_PAYLOAD_SIZE:
+        return None
+    if frame[3] != MSG_PAIRING_INFO:
+        return None
+
+    payload = frame[HEADER_SIZE:]
+    mode = payload[0]
+    local_mac = payload[1:7]
+    has_saved_host = payload[7] != 0
+    saved_host = payload[8:14]
+    is_bonded = payload[14] != 0
+    bt_state = payload[15]
+    mode_name = CONTROLLER_MODE_NAMES.get(mode, f"0x{mode:02x}")
+    state_name = BT_STATE_NAMES.get(bt_state, f"0x{bt_state:02x}")
+
+    return (
+        f"PAIRING_INFO mode={mode_name} "
+        f"state={state_name} "
+        f"local_bt_mac={format_bd_addr(local_mac)} "
+        f"has_saved_host={'yes' if has_saved_host else 'no'} "
+        f"saved_switch={format_bd_addr(saved_host)} "
+        f"bonded={'yes' if is_bonded else 'no'}"
+    )
+
+
 def state_payload(args: argparse.Namespace) -> bytes:
     return build_state_payload(
         buttons=args.buttons,
@@ -574,6 +630,11 @@ def read_reply(port: serial.Serial, total_wait_s: float = 1.0) -> None:
             if event_lines is not None:
                 for line in event_lines:
                     print(line)
+                continue
+
+            pairing_info = decode_pairing_info_frame(frame)
+            if pairing_info is not None:
+                print(pairing_info)
     else:
         print("No reply received.")
 
@@ -611,13 +672,37 @@ def main() -> int:
     dump_events.add_argument("port", help="Serial port, for example COM5.")
     dump_events.add_argument("--baud", type=int, default=115200)
 
-    unplug = subparsers.add_parser("unplug", help="Request a virtual cable unplug.")
+    unplug = subparsers.add_parser(
+        "unplug",
+        help="Compatibility alias for forgetting the active mode pairing.",
+    )
     unplug.add_argument("port", help="Serial port, for example COM5.")
     unplug.add_argument("--baud", type=int, default=115200)
 
     clear_bonds = subparsers.add_parser("clear-bonds", help="Remove all stored Bluetooth bonds.")
     clear_bonds.add_argument("port", help="Serial port, for example COM5.")
     clear_bonds.add_argument("--baud", type=int, default=115200)
+
+    pairing_start = subparsers.add_parser(
+        "pairing-start",
+        help="Force the active NINA mode into pairable/discoverable mode.",
+    )
+    pairing_start.add_argument("port", help="Serial port, for example COM5.")
+    pairing_start.add_argument("--baud", type=int, default=115200)
+
+    forget_current = subparsers.add_parser(
+        "forget-current",
+        help="Forget pairing state for only the active NINA mode.",
+    )
+    forget_current.add_argument("port", help="Serial port, for example COM5.")
+    forget_current.add_argument("--baud", type=int, default=115200)
+
+    pairing_info = subparsers.add_parser(
+        "pairing-info",
+        help="Read active mode pairing metadata from the NINA.",
+    )
+    pairing_info.add_argument("port", help="Serial port, for example COM5.")
+    pairing_info.add_argument("--baud", type=int, default=115200)
 
     mode = subparsers.add_parser("set-mode", help="Set controller mode while Bluetooth is off.")
     mode.add_argument("port", help="Serial port, for example COM5.")
@@ -645,6 +730,15 @@ def main() -> int:
         payload = b""
     elif args.command == "clear-bonds":
         message_type = MSG_CLEAR_BONDS
+        payload = b""
+    elif args.command == "pairing-start":
+        message_type = MSG_PAIRING_START
+        payload = b""
+    elif args.command == "forget-current":
+        message_type = MSG_PAIRING_FORGET_CURRENT_MODE
+        payload = b""
+    elif args.command == "pairing-info":
+        message_type = MSG_PAIRING_GET_INFO
         payload = b""
     elif args.command == "set-mode":
         message_type = MSG_SET_CONTROLLER_MODE
@@ -677,6 +771,8 @@ def main() -> int:
             read_wait_s = 1.5
         elif args.command == "bt" and args.state == "on":
             read_wait_s = 3.0
+        elif args.command in ("pairing-start", "forget-current"):
+            read_wait_s = 1.5
         read_reply(port, total_wait_s=read_wait_s)
 
     return 0

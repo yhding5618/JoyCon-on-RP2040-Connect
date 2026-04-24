@@ -1,7 +1,7 @@
 use crate::bridge_protocol::{
     crc16_ccitt, scan_frames, ControllerStatePayload, EventDumpPayload, Frame, FrameHeader,
-    MessageType, StatusPayload, CONTROLLER_STATE_BYTES, EVENT_DUMP_PAYLOAD_BYTES,
-    FRAME_HEADER_BYTES, FRAME_MAGIC0, FRAME_MAGIC1, MAX_PAYLOAD_BYTES,
+    MessageType, PairingInfoPayload, StatusPayload, CONTROLLER_STATE_BYTES,
+    EVENT_DUMP_PAYLOAD_BYTES, FRAME_HEADER_BYTES, FRAME_MAGIC0, FRAME_MAGIC1, MAX_PAYLOAD_BYTES,
 };
 
 #[test]
@@ -119,6 +119,25 @@ fn event_dump_decoder_parses_fixed_payload() {
     assert!(dump.overflowed);
     assert_eq!(dump.entries[0].timestamp_ms, 1000);
     assert_eq!(dump.entries[1].arg1, 0x13);
+}
+
+#[test]
+fn pairing_info_decoder_parses_fixed_payload() {
+    let payload = [
+        0x02, 0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01, 0xd4, 0xf0, 0x57, 0x12, 0x34, 0x56, 0x01,
+        0x04,
+    ];
+
+    let info = PairingInfoPayload::decode(&payload).expect("pairing info should decode");
+    assert_eq!(info.mode, 0x02);
+    assert_eq!(info.local_bt_mac, [0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]);
+    assert!(info.has_saved_host);
+    assert_eq!(
+        info.saved_switch_bd_addr,
+        [0xd4, 0xf0, 0x57, 0x12, 0x34, 0x56]
+    );
+    assert!(info.is_bonded);
+    assert_eq!(info.bt_state, 0x04);
 }
 
 #[test]
