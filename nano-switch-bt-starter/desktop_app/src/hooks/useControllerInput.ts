@@ -197,11 +197,11 @@ function defaultAppStateSnapshot(): AppStateSnapshot {
       lastStatus: null,
     },
     profile: {
-      activeProfileId: "default-left-joycon",
+      activeProfileId: "default-right-joycon",
       activeProfile: {
-        id: "default-left-joycon",
-        name: "Default Left Joy-Con",
-        controllerModel: "LeftJoyCon",
+        id: "default-right-joycon",
+        name: "Default Right Joy-Con",
+        controllerModel: "RightJoyCon",
         bindings: {},
         mouse: {
           enabled: false,

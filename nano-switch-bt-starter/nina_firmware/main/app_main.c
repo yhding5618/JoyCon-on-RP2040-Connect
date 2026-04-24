@@ -21,7 +21,7 @@ void app_main(void) {
     }
   }
 
-  if (bridge_uart_init() != ESP_OK || switch_hid_init() != ESP_OK) {
+  if (switch_hid_init() != ESP_OK || bridge_uart_init() != ESP_OK) {
     while (1) {
       vTaskDelay(pdMS_TO_TICKS(1000));
     }

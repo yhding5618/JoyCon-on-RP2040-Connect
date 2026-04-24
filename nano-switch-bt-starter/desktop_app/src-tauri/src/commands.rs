@@ -7,14 +7,18 @@ use crate::app_state::sync_runtime_metrics;
 use crate::app_state::ManagedAppState;
 use crate::bridge_protocol::{
     ControllerStatePayload, BTN_LJC_CAPTURE, BTN_LJC_DOWN, BTN_LJC_L, BTN_LJC_LEFT, BTN_LJC_MINUS,
-    BTN_LJC_RIGHT, BTN_LJC_SL, BTN_LJC_SR, BTN_LJC_STICK, BTN_LJC_UP, BTN_LJC_ZL,
+    BTN_LJC_RIGHT, BTN_LJC_SL, BTN_LJC_SR, BTN_LJC_STICK, BTN_LJC_UP, BTN_LJC_ZL, BTN_RJC_A,
+    BTN_RJC_B, BTN_RJC_HOME, BTN_RJC_PLUS, BTN_RJC_R, BTN_RJC_SL, BTN_RJC_SR, BTN_RJC_STICK,
+    BTN_RJC_X, BTN_RJC_Y, BTN_RJC_ZR,
 };
 use crate::controller_mapper::map_input_to_controller;
 use crate::diagnostics::{
     note_events, note_input_update, note_serial_error, note_serial_frames, note_status, push_log,
 };
 use crate::errors::AppError;
-use crate::model::{AppStateSnapshot, ConnectionState, InputSnapshot, LatestInputState};
+use crate::model::{
+    AppStateSnapshot, ConnectionState, ControllerModel, InputSnapshot, LatestInputState,
+};
 use crate::serial_worker::{WorkerCommand, WorkerReply};
 
 #[tauri::command]
@@ -265,7 +269,8 @@ pub fn tap_left_joycon_button(
     duration_ms: Option<u64>,
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
-    let buttons = left_joycon_button_bits(&button)?;
+    let controller_model = state.snapshot().profile.active_profile.controller_model;
+    let buttons = controller_button_bits(&button, controller_model)?;
     let duration = Duration::from_millis(duration_ms.unwrap_or(250).clamp(25, 2000));
 
     state.update(|app_state| {
@@ -316,20 +321,36 @@ fn validate_input_snapshot(snapshot: InputSnapshot) -> Result<InputSnapshot, App
     Ok(snapshot)
 }
 
-fn left_joycon_button_bits(button: &str) -> Result<u32, String> {
-    match button {
-        "down" => Ok(BTN_LJC_DOWN),
-        "up" => Ok(BTN_LJC_UP),
-        "right" => Ok(BTN_LJC_RIGHT),
-        "left" => Ok(BTN_LJC_LEFT),
-        "sl" => Ok(BTN_LJC_SL),
-        "sr" => Ok(BTN_LJC_SR),
-        "l" => Ok(BTN_LJC_L),
-        "zl" => Ok(BTN_LJC_ZL),
-        "minus" => Ok(BTN_LJC_MINUS),
-        "stick" => Ok(BTN_LJC_STICK),
-        "capture" => Ok(BTN_LJC_CAPTURE),
-        _ => Err(format!("unsupported Left Joy-Con button: {button}")),
+fn controller_button_bits(button: &str, controller_model: ControllerModel) -> Result<u32, String> {
+    match controller_model {
+        ControllerModel::RightJoyCon | ControllerModel::ProController => match button {
+            "a" => Ok(BTN_RJC_A),
+            "b" => Ok(BTN_RJC_B),
+            "x" => Ok(BTN_RJC_X),
+            "y" => Ok(BTN_RJC_Y),
+            "sl" => Ok(BTN_RJC_SL),
+            "sr" => Ok(BTN_RJC_SR),
+            "r" | "l" => Ok(BTN_RJC_R),
+            "zr" | "zl" => Ok(BTN_RJC_ZR),
+            "plus" | "minus" => Ok(BTN_RJC_PLUS),
+            "stick" => Ok(BTN_RJC_STICK),
+            "home" | "capture" => Ok(BTN_RJC_HOME),
+            _ => Err(format!("unsupported Right Joy-Con button: {button}")),
+        },
+        _ => match button {
+            "a" | "down" => Ok(BTN_LJC_DOWN),
+            "y" | "up" => Ok(BTN_LJC_UP),
+            "x" | "right" => Ok(BTN_LJC_RIGHT),
+            "b" | "left" => Ok(BTN_LJC_LEFT),
+            "sl" => Ok(BTN_LJC_SL),
+            "sr" => Ok(BTN_LJC_SR),
+            "l" | "r" => Ok(BTN_LJC_L),
+            "zl" | "zr" => Ok(BTN_LJC_ZL),
+            "minus" | "plus" => Ok(BTN_LJC_MINUS),
+            "stick" => Ok(BTN_LJC_STICK),
+            "capture" | "home" => Ok(BTN_LJC_CAPTURE),
+            _ => Err(format!("unsupported Left Joy-Con button: {button}")),
+        },
     }
 }
 

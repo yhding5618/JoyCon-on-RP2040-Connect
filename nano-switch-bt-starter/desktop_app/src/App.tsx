@@ -62,6 +62,7 @@ export default function App() {
         <div className="column-stack">
           <SerialPanel
             serial={appState.serial}
+            controllerModel={appState.profile.activeProfile.controllerModel}
             loading={isBusy}
             onRefreshPorts={refreshPorts}
             onSelectPort={selectSerialPort}

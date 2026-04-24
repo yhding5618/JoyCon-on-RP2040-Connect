@@ -5,13 +5,21 @@ export type LogicalAction =
   | "MoveDown"
   | "MoveLeft"
   | "MoveRight"
+  | "A"
+  | "B"
+  | "X"
+  | "Y"
   | "L"
   | "ZL"
+  | "R"
+  | "ZR"
   | "SL"
   | "SR"
   | "Minus"
+  | "Plus"
   | "Stick"
-  | "Capture";
+  | "Capture"
+  | "Home";
 
 export type MouseSettings = {
   enabled: boolean;

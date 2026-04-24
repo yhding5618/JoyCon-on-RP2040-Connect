@@ -1,8 +1,10 @@
 import { Panel } from "./Panel";
+import type { ControllerModel } from "../models/profile";
 import type { SerialSessionState } from "../models/ui";
 
 type SerialPanelProps = {
   serial: SerialSessionState;
+  controllerModel: ControllerModel;
   loading: boolean;
   onRefreshPorts: () => void;
   onSelectPort: (port: string) => void;
@@ -17,6 +19,7 @@ type SerialPanelProps = {
 
 export function SerialPanel({
   serial,
+  controllerModel,
   loading,
   onRefreshPorts,
   onSelectPort,
@@ -29,6 +32,10 @@ export function SerialPanel({
   onTapButton,
 }: SerialPanelProps) {
   const canSendTestTap = !loading && serial.connectionState === "Connected";
+  const testButtons =
+    controllerModel === "RightJoyCon" || controllerModel === "ProController"
+      ? ["a", "b", "x", "y", "sl", "sr", "r", "zr", "plus", "home"]
+      : ["a", "b", "x", "y", "sl", "sr", "l", "zl", "minus", "capture"];
 
   return (
     <Panel
@@ -126,23 +133,31 @@ export function SerialPanel({
               <p className="stat-label">Bonds</p>
               <p className="stat-value">{serial.lastStatus.bondDeviceCount}</p>
             </div>
+            <div className="stat-card">
+              <p className="stat-label">Controller Mode</p>
+              <p className="stat-value">{serial.lastStatus.controllerMode}</p>
+            </div>
+            <div className="stat-card">
+              <p className="stat-label">Bluetooth</p>
+              <p className="stat-value">
+                {serial.lastStatus.bluetoothEnabled ? "On" : "Off"}
+              </p>
+            </div>
           </div>
         ) : null}
 
         <div>
           <p className="stat-label">Direct Test Tap</p>
           <div className="button-row">
-            {["sl", "sr", "l", "zl", "up", "down", "left", "right", "minus"].map(
-              (button) => (
-                <button
-                  disabled={!canSendTestTap}
-                  key={button}
-                  onClick={() => onTapButton(button)}
-                >
-                  {button.toUpperCase()}
-                </button>
-              ),
-            )}
+            {testButtons.map((button) => (
+              <button
+                disabled={!canSendTestTap}
+                key={button}
+                onClick={() => onTapButton(button)}
+              >
+                {button.toUpperCase()}
+              </button>
+            ))}
           </div>
         </div>
       </div>

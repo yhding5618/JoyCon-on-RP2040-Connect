@@ -1,4 +1,4 @@
-import { defaultLeftJoyConProfile, defaultInputSnapshot } from "./defaults";
+import { defaultInputSnapshot, defaultRightJoyConProfile } from "./defaults";
 import { invokeTauri } from "./tauri";
 import type { InputSnapshot } from "../models/input";
 import type { AppStateSnapshot } from "../models/ui";
@@ -20,6 +20,50 @@ const mockStatus = {
   lastGapStatus: 0,
   lastGapReason: 0,
   bondDeviceCount: 0,
+  controllerMode: 0,
+  bluetoothEnabled: 0,
+  reserved0: 0,
+  reserved1: 0,
+};
+
+const leftJoyConButtonBits: Record<string, number> = {
+  a: 1 << 0,
+  down: 1 << 0,
+  y: 1 << 1,
+  up: 1 << 1,
+  x: 1 << 2,
+  right: 1 << 2,
+  b: 1 << 3,
+  left: 1 << 3,
+  sl: 1 << 4,
+  sr: 1 << 5,
+  l: 1 << 6,
+  r: 1 << 6,
+  zl: 1 << 7,
+  zr: 1 << 7,
+  minus: 1 << 8,
+  plus: 1 << 8,
+  stick: 1 << 9,
+  capture: 1 << 10,
+  home: 1 << 10,
+};
+
+const rightJoyConButtonBits: Record<string, number> = {
+  y: 1 << 16,
+  x: 1 << 17,
+  b: 1 << 18,
+  a: 1 << 19,
+  sr: 1 << 20,
+  sl: 1 << 21,
+  r: 1 << 22,
+  l: 1 << 22,
+  zr: 1 << 23,
+  zl: 1 << 23,
+  plus: 1 << 24,
+  minus: 1 << 24,
+  stick: 1 << 25,
+  home: 1 << 26,
+  capture: 1 << 26,
 };
 
 let browserState: AppStateSnapshot = {
@@ -32,8 +76,8 @@ let browserState: AppStateSnapshot = {
     lastStatus: null,
   },
   profile: {
-    activeProfileId: defaultLeftJoyConProfile.id,
-    activeProfile: defaultLeftJoyConProfile,
+    activeProfileId: defaultRightJoyConProfile.id,
+    activeProfile: defaultRightJoyConProfile,
   },
   input: {
     ...defaultInputSnapshot,
@@ -318,19 +362,9 @@ export function tapLeftJoyConButtonCommand(
     "tap_left_joycon_button",
     { button, durationMs },
     () => {
-      const bits: Record<string, number> = {
-        down: 1 << 0,
-        up: 1 << 1,
-        right: 1 << 2,
-        left: 1 << 3,
-        sl: 1 << 4,
-        sr: 1 << 5,
-        l: 1 << 6,
-        zl: 1 << 7,
-        minus: 1 << 8,
-        stick: 1 << 9,
-        capture: 1 << 10,
-      };
+      const bits = browserState.profile.activeProfile.controllerModel === "RightJoyCon"
+        ? rightJoyConButtonBits
+        : leftJoyConButtonBits;
 
       browserState = {
         ...browserState,
@@ -373,18 +407,47 @@ export function pushInputSnapshot(
     () => {
       const pressed = new Set(snapshot.pressedCodes);
       let buttons = 0;
+      const stickExtent = 32767;
+      let lx = 0;
+      let ly = 0;
 
-      if (pressed.has("KeyS")) buttons |= 1 << 0;
-      if (pressed.has("KeyW")) buttons |= 1 << 1;
-      if (pressed.has("KeyD")) buttons |= 1 << 2;
-      if (pressed.has("KeyA")) buttons |= 1 << 3;
-      if (pressed.has("KeyZ")) buttons |= 1 << 4;
-      if (pressed.has("KeyC")) buttons |= 1 << 5;
-      if (pressed.has("KeyQ")) buttons |= 1 << 6;
-      if (pressed.has("KeyE")) buttons |= 1 << 7;
-      if (pressed.has("Tab")) buttons |= 1 << 8;
-      if (pressed.has("ShiftLeft") || pressed.has("ShiftRight")) buttons |= 1 << 9;
-      if (pressed.has("F12")) buttons |= 1 << 10;
+      if (browserState.profile.activeProfile.controllerModel === "RightJoyCon") {
+        if (pressed.has("KeyW")) lx -= stickExtent;
+        if (pressed.has("KeyS")) lx += stickExtent;
+        if (pressed.has("KeyA")) ly -= stickExtent;
+        if (pressed.has("KeyD")) ly += stickExtent;
+        if (pressed.has("KeyJ")) buttons |= rightJoyConButtonBits.y;
+        if (pressed.has("KeyI")) buttons |= rightJoyConButtonBits.x;
+        if (pressed.has("KeyK")) buttons |= rightJoyConButtonBits.b;
+        if (pressed.has("KeyL")) buttons |= rightJoyConButtonBits.a;
+        if (pressed.has("KeyE")) buttons |= rightJoyConButtonBits.sl;
+        if (pressed.has("KeyU")) buttons |= rightJoyConButtonBits.sr;
+        if (pressed.has("KeyQ")) buttons |= rightJoyConButtonBits.plus;
+        if (pressed.has("ShiftRight")) buttons |= rightJoyConButtonBits.stick;
+        if (pressed.has("KeyO")) buttons |= rightJoyConButtonBits.home;
+      } else {
+        if (pressed.has("KeyS")) lx -= stickExtent;
+        if (pressed.has("KeyW")) lx += stickExtent;
+        if (pressed.has("KeyD")) ly -= stickExtent;
+        if (pressed.has("KeyA")) ly += stickExtent;
+        if (pressed.has("KeyL")) buttons |= leftJoyConButtonBits.a;
+        if (pressed.has("KeyJ")) buttons |= leftJoyConButtonBits.y;
+        if (pressed.has("KeyI")) buttons |= leftJoyConButtonBits.x;
+        if (pressed.has("KeyK")) buttons |= leftJoyConButtonBits.b;
+        if (pressed.has("KeyE")) buttons |= leftJoyConButtonBits.sl;
+        if (pressed.has("KeyU")) buttons |= leftJoyConButtonBits.sr;
+        if (pressed.has("KeyQ")) buttons |= leftJoyConButtonBits.minus;
+        if (pressed.has("ShiftLeft") || pressed.has("ShiftRight")) {
+          buttons |= leftJoyConButtonBits.stick;
+        }
+        if (pressed.has("KeyO")) buttons |= leftJoyConButtonBits.capture;
+      }
+
+      if (!snapshot.captureEnabled || !document.hasFocus()) {
+        buttons = 0;
+        lx = 0;
+        ly = 0;
+      }
 
       browserState = {
         ...browserState,
@@ -395,6 +458,18 @@ export function pushInputSnapshot(
         controller: {
           ...browserState.controller,
           buttons,
+          lx: browserState.profile.activeProfile.controllerModel === "RightJoyCon"
+            ? 0
+            : Math.max(-stickExtent, Math.min(stickExtent, lx)),
+          ly: browserState.profile.activeProfile.controllerModel === "RightJoyCon"
+            ? 0
+            : Math.max(-stickExtent, Math.min(stickExtent, ly)),
+          rx: browserState.profile.activeProfile.controllerModel === "RightJoyCon"
+            ? Math.max(-stickExtent, Math.min(stickExtent, lx))
+            : 0,
+          ry: browserState.profile.activeProfile.controllerModel === "RightJoyCon"
+            ? Math.max(-stickExtent, Math.min(stickExtent, ly))
+            : 0,
         },
         diagnostics: {
           ...browserState.diagnostics,

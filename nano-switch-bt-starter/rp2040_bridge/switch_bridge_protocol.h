@@ -28,6 +28,8 @@ typedef enum {
   SB_MSG_SET_STATE = 0x10,
   SB_MSG_VIRTUAL_CABLE_UNPLUG = 0x11,
   SB_MSG_CLEAR_BONDS = 0x12,
+  SB_MSG_SET_CONTROLLER_MODE = 0x13,
+  SB_MSG_SET_BLUETOOTH_ENABLED = 0x14,
 } sb_message_type_t;
 
 typedef enum {
@@ -42,7 +44,14 @@ typedef enum {
   SB_STATUS_FLAG_HID_READY = 1u << 2,
   SB_STATUS_FLAG_CONNECTED = 1u << 3,
   SB_STATUS_FLAG_VIRTUAL_CABLE = 1u << 4,
+  SB_STATUS_FLAG_BT_POWERED = 1u << 5,
 } sb_status_flag_bits_t;
+
+typedef enum {
+  SB_CONTROLLER_MODE_LEFT_JOYCON = 0x00,
+  SB_CONTROLLER_MODE_RIGHT_JOYCON = 0x01,
+  SB_CONTROLLER_MODE_PRO_CONTROLLER = 0x02,
+} sb_controller_mode_t;
 
 typedef enum {
   SB_BTN_LJC_DOWN = 1u << 0,
@@ -57,6 +66,20 @@ typedef enum {
   SB_BTN_LJC_STICK = 1u << 9,
   SB_BTN_LJC_CAPTURE = 1u << 10,
 } sb_left_joycon_button_bits_t;
+
+typedef enum {
+  SB_BTN_RJC_Y = 1u << 16,
+  SB_BTN_RJC_X = 1u << 17,
+  SB_BTN_RJC_B = 1u << 18,
+  SB_BTN_RJC_A = 1u << 19,
+  SB_BTN_RJC_SR = 1u << 20,
+  SB_BTN_RJC_SL = 1u << 21,
+  SB_BTN_RJC_R = 1u << 22,
+  SB_BTN_RJC_ZR = 1u << 23,
+  SB_BTN_RJC_PLUS = 1u << 24,
+  SB_BTN_RJC_STICK = 1u << 25,
+  SB_BTN_RJC_HOME = 1u << 26,
+} sb_right_joycon_button_bits_t;
 
 typedef enum {
   SB_MISC_CHARGING = 1u << 0,
@@ -121,6 +144,10 @@ typedef struct SB_PACKED {
   uint8_t last_gap_status;
   uint8_t last_gap_reason;
   uint8_t bond_device_count;
+  uint8_t controller_mode;
+  uint8_t bluetooth_enabled;
+  uint8_t reserved0;
+  uint8_t reserved1;
 } sb_status_payload_t;
 
 typedef struct SB_PACKED {

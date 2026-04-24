@@ -16,6 +16,8 @@ MSG_EVENTS = 0x05
 MSG_SET_STATE = 0x10
 MSG_VC_UNPLUG = 0x11
 MSG_CLEAR_BONDS = 0x12
+MSG_SET_CONTROLLER_MODE = 0x13
+MSG_SET_BLUETOOTH_ENABLED = 0x14
 HEADER_SIZE = 8
 EVENT_PAYLOAD_SIZE = 48
 
@@ -24,13 +26,29 @@ BUTTON_NAMES = {
     "up": 1 << 1,
     "right": 1 << 2,
     "left": 1 << 3,
+    "left-a": 1 << 0,
+    "left-y": 1 << 1,
+    "left-x": 1 << 2,
+    "left-b": 1 << 3,
     "sl": 1 << 4,
     "sr": 1 << 5,
     "l": 1 << 6,
     "zl": 1 << 7,
     "minus": 1 << 8,
     "stick": 1 << 9,
+    "left-stick": 1 << 9,
     "capture": 1 << 10,
+    "y": 1 << 16,
+    "x": 1 << 17,
+    "b": 1 << 18,
+    "a": 1 << 19,
+    "right-sr": 1 << 20,
+    "right-sl": 1 << 21,
+    "r": 1 << 22,
+    "zr": 1 << 23,
+    "plus": 1 << 24,
+    "right-stick": 1 << 25,
+    "home": 1 << 26,
 }
 
 FLAG_BRIDGE_READY = 1 << 0
@@ -38,6 +56,19 @@ FLAG_BT_READY = 1 << 1
 FLAG_HID_READY = 1 << 2
 FLAG_CONNECTED = 1 << 3
 FLAG_VIRTUAL_CABLE = 1 << 4
+FLAG_BT_POWERED = 1 << 5
+
+CONTROLLER_MODES = {
+    "left": 0x00,
+    "right": 0x01,
+    "pro": 0x02,
+}
+
+CONTROLLER_MODE_NAMES = {
+    0x00: "left",
+    0x01: "right",
+    0x02: "pro",
+}
 
 EVENT_SOURCE_NAMES = {
     0x00: "NONE",
@@ -100,6 +131,8 @@ BRIDGE_EVENT_NAMES = {
     MSG_GET_EVENTS: "GET_EVENTS",
     MSG_VC_UNPLUG: "VIRTUAL_CABLE_UNPLUG",
     MSG_CLEAR_BONDS: "CLEAR_BONDS",
+    MSG_SET_CONTROLLER_MODE: "SET_CONTROLLER_MODE",
+    MSG_SET_BLUETOOTH_ENABLED: "SET_BLUETOOTH_ENABLED",
 }
 
 BT_IDENTITY_EVENT_NAMES = {
@@ -211,6 +244,8 @@ def flag_names(flags: int) -> list[str]:
         names.append("CONNECTED")
     if flags & FLAG_VIRTUAL_CABLE:
         names.append("VIRTUAL_CABLE")
+    if flags & FLAG_BT_POWERED:
+        names.append("BT_POWERED")
     return names
 
 
@@ -300,10 +335,7 @@ def describe_event(source: int, event: int, arg0: int, arg1: int) -> tuple[str, 
         if event == 0x0B:
             return name, f"hid_subclass=0x{arg0:02x} desc_len_low=0x{arg1:02x}"
         if event == 0x0C:
-            return name, (
-                f'desc_len_high=0x{arg0:02x} gap_name="Joy-Con (L)" '
-                f"gap_name_len={arg1}"
-            )
+            return name, f"desc_len_high=0x{arg0:02x} gap_name_len={arg1}"
         if event == 0x0D:
             return name, (
                 f'hid_service="Wireless Gamepad" hid_service_len={arg0} '
@@ -321,7 +353,12 @@ def describe_event(source: int, event: int, arg0: int, arg1: int) -> tuple[str, 
 
 
 def decode_status_frame(frame: bytes) -> str | None:
-    if len(frame) not in (HEADER_SIZE + 8, HEADER_SIZE + 12, HEADER_SIZE + 16):
+    if len(frame) not in (
+        HEADER_SIZE + 8,
+        HEADER_SIZE + 12,
+        HEADER_SIZE + 16,
+        HEADER_SIZE + 20,
+    ):
         return None
     if frame[3] != MSG_STATUS:
         return None
@@ -346,6 +383,8 @@ def decode_status_frame(frame: bytes) -> str | None:
         last_hid_conn_status = 0
         last_hid_report_type = 0
         last_hid_report_id = 0
+        controller_mode = 0
+        bluetooth_enabled = 0
     elif len(payload) == 12:
         (
             flags,
@@ -365,7 +404,10 @@ def decode_status_frame(frame: bytes) -> str | None:
         last_hid_conn_status = 0
         last_hid_report_type = 0
         last_hid_report_id = 0
+        controller_mode = 0
+        bluetooth_enabled = 0
     else:
+        base_payload = payload[:16]
         (
             flags,
             protocol_mode,
@@ -383,14 +425,22 @@ def decode_status_frame(frame: bytes) -> str | None:
             last_gap_status,
             last_gap_reason,
             bond_device_count,
-        ) = struct.unpack("<BBBBBBBBBBBBBBBB", payload)
+        ) = struct.unpack("<BBBBBBBBBBBBBBBB", base_payload)
+        controller_mode = payload[16] if len(payload) >= 20 else 0
+        bluetooth_enabled = payload[17] if len(payload) >= 20 else 0
 
     flags_text = "|".join(flag_names(flags)) or "none"
     hid_event_name = HID_EVENT_NAMES.get(last_hid_event, f"0x{last_hid_event:02x}")
     gap_event_name = GAP_EVENT_NAMES.get(last_gap_event, f"0x{last_gap_event:02x}")
+    controller_mode_name = CONTROLLER_MODE_NAMES.get(
+        controller_mode,
+        f"0x{controller_mode:02x}",
+    )
 
     summary = (
         f"STATUS flags=0x{flags:02x} ({flags_text}) "
+        f"mode={controller_mode_name} "
+        f"bt={'on' if bluetooth_enabled else 'off'} "
         f"protocol=0x{protocol_mode:02x} "
         f"input_mode=0x{input_report_mode:02x} "
         f"battery={battery_level} "
@@ -569,6 +619,16 @@ def main() -> int:
     clear_bonds.add_argument("port", help="Serial port, for example COM5.")
     clear_bonds.add_argument("--baud", type=int, default=115200)
 
+    mode = subparsers.add_parser("set-mode", help="Set controller mode while Bluetooth is off.")
+    mode.add_argument("port", help="Serial port, for example COM5.")
+    mode.add_argument("mode", choices=sorted(CONTROLLER_MODES))
+    mode.add_argument("--baud", type=int, default=115200)
+
+    bluetooth = subparsers.add_parser("bt", help="Turn firmware Bluetooth on or off.")
+    bluetooth.add_argument("port", help="Serial port, for example COM5.")
+    bluetooth.add_argument("state", choices=("on", "off"))
+    bluetooth.add_argument("--baud", type=int, default=115200)
+
     args = parser.parse_args()
 
     if args.command == "state":
@@ -586,6 +646,12 @@ def main() -> int:
     elif args.command == "clear-bonds":
         message_type = MSG_CLEAR_BONDS
         payload = b""
+    elif args.command == "set-mode":
+        message_type = MSG_SET_CONTROLLER_MODE
+        payload = bytes([CONTROLLER_MODES[args.mode]])
+    elif args.command == "bt":
+        message_type = MSG_SET_BLUETOOTH_ENABLED
+        payload = bytes([1 if args.state == "on" else 0])
     else:
         message_type = MSG_VC_UNPLUG
         payload = b""
@@ -606,7 +672,12 @@ def main() -> int:
             )
             port.write(release_frame)
             port.flush()
-        read_reply(port, total_wait_s=1.5 if args.command == "dump-events" else 1.0)
+        read_wait_s = 1.0
+        if args.command == "dump-events":
+            read_wait_s = 1.5
+        elif args.command == "bt" and args.state == "on":
+            read_wait_s = 3.0
+        read_reply(port, total_wait_s=read_wait_s)
 
     return 0
 

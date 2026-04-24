@@ -187,6 +187,20 @@ static void bridge_uart_handle_frame(const sb_frame_t *frame) {
       bridge_uart_send_status();
       break;
 
+    case SB_MSG_SET_CONTROLLER_MODE:
+      if (frame->header.payload_len >= 1u) {
+        switch_hid_set_controller_mode((sb_controller_mode_t)frame->payload[0]);
+      }
+      bridge_uart_send_status();
+      break;
+
+    case SB_MSG_SET_BLUETOOTH_ENABLED:
+      if (frame->header.payload_len >= 1u) {
+        switch_hid_set_bluetooth_enabled(frame->payload[0] != 0u);
+      }
+      bridge_uart_send_status();
+      break;
+
     default:
       break;
   }

@@ -28,13 +28,21 @@ pub enum LogicalAction {
     MoveDown,
     MoveLeft,
     MoveRight,
+    A,
+    B,
+    X,
+    Y,
     L,
     ZL,
+    R,
+    ZR,
     SL,
     SR,
     Minus,
+    Plus,
     Stick,
     Capture,
+    Home,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

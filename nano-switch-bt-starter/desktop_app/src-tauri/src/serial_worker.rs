@@ -563,6 +563,8 @@ fn bridge_event_name(event: u8) -> &'static str {
         0x04 => "GET_EVENTS",
         0x11 => "VIRTUAL_CABLE_UNPLUG",
         0x12 => "CLEAR_BONDS",
+        0x13 => "SET_CONTROLLER_MODE",
+        0x14 => "SET_BLUETOOTH_ENABLED",
         _ => "UNKNOWN",
     }
 }

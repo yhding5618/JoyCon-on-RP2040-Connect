@@ -17,6 +17,11 @@ pub const STATUS_FLAG_BT_READY: u8 = 1 << 1;
 pub const STATUS_FLAG_HID_READY: u8 = 1 << 2;
 pub const STATUS_FLAG_CONNECTED: u8 = 1 << 3;
 pub const STATUS_FLAG_VIRTUAL_CABLE: u8 = 1 << 4;
+pub const STATUS_FLAG_BT_POWERED: u8 = 1 << 5;
+
+pub const CONTROLLER_MODE_LEFT_JOYCON: u8 = 0x00;
+pub const CONTROLLER_MODE_RIGHT_JOYCON: u8 = 0x01;
+pub const CONTROLLER_MODE_PRO_CONTROLLER: u8 = 0x02;
 
 pub const BTN_LJC_DOWN: u32 = 1 << 0;
 pub const BTN_LJC_UP: u32 = 1 << 1;
@@ -30,6 +35,18 @@ pub const BTN_LJC_MINUS: u32 = 1 << 8;
 pub const BTN_LJC_STICK: u32 = 1 << 9;
 pub const BTN_LJC_CAPTURE: u32 = 1 << 10;
 
+pub const BTN_RJC_Y: u32 = 1 << 16;
+pub const BTN_RJC_X: u32 = 1 << 17;
+pub const BTN_RJC_B: u32 = 1 << 18;
+pub const BTN_RJC_A: u32 = 1 << 19;
+pub const BTN_RJC_SR: u32 = 1 << 20;
+pub const BTN_RJC_SL: u32 = 1 << 21;
+pub const BTN_RJC_R: u32 = 1 << 22;
+pub const BTN_RJC_ZR: u32 = 1 << 23;
+pub const BTN_RJC_PLUS: u32 = 1 << 24;
+pub const BTN_RJC_STICK: u32 = 1 << 25;
+pub const BTN_RJC_HOME: u32 = 1 << 26;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum MessageType {
@@ -41,6 +58,8 @@ pub enum MessageType {
     SetState = 0x10,
     VirtualCableUnplug = 0x11,
     ClearBonds = 0x12,
+    SetControllerMode = 0x13,
+    SetBluetoothEnabled = 0x14,
 }
 
 impl TryFrom<u8> for MessageType {
@@ -56,6 +75,8 @@ impl TryFrom<u8> for MessageType {
             0x10 => Ok(Self::SetState),
             0x11 => Ok(Self::VirtualCableUnplug),
             0x12 => Ok(Self::ClearBonds),
+            0x13 => Ok(Self::SetControllerMode),
+            0x14 => Ok(Self::SetBluetoothEnabled),
             _ => Err(ProtocolError::UnknownMessageType(value)),
         }
     }
@@ -268,6 +289,10 @@ pub struct StatusPayload {
     pub last_gap_status: u8,
     pub last_gap_reason: u8,
     pub bond_device_count: u8,
+    pub controller_mode: u8,
+    pub bluetooth_enabled: u8,
+    pub reserved0: u8,
+    pub reserved1: u8,
 }
 
 impl StatusPayload {
@@ -299,7 +324,7 @@ impl StatusPayload {
                 bond_device_count: payload[11],
                 ..Self::default()
             }),
-            16 => Ok(Self {
+            16 | 20 => Ok(Self {
                 flags: payload[0],
                 protocol_mode: payload[1],
                 input_report_mode: payload[2],
@@ -316,6 +341,10 @@ impl StatusPayload {
                 last_gap_status: payload[13],
                 last_gap_reason: payload[14],
                 bond_device_count: payload[15],
+                controller_mode: if payload.len() >= 20 { payload[16] } else { 0 },
+                bluetooth_enabled: if payload.len() >= 20 { payload[17] } else { 0 },
+                reserved0: if payload.len() >= 20 { payload[18] } else { 0 },
+                reserved1: if payload.len() >= 20 { payload[19] } else { 0 },
             }),
             len => Err(ProtocolError::InvalidStatusPayloadLength(len)),
         }

@@ -89,7 +89,7 @@ fn set_state_frame_matches_python_tool() {
 fn status_decoder_supports_current_status_payload() {
     let payload = [
         0x07, 0x00, 0x30, 0x08, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x00, 0x30, 0x10, 0x00, 0x13,
-        0x01,
+        0x01, 0x02, 0x01, 0x00, 0x00,
     ];
     let status = StatusPayload::decode(&payload).expect("status should decode");
 
@@ -98,6 +98,8 @@ fn status_decoder_supports_current_status_payload() {
     assert_eq!(status.last_hid_event, 0x04);
     assert_eq!(status.last_gap_event, 0x10);
     assert_eq!(status.bond_device_count, 0x01);
+    assert_eq!(status.controller_mode, 0x02);
+    assert_eq!(status.bluetooth_enabled, 0x01);
 }
 
 #[test]

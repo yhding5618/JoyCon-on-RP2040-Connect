@@ -28,6 +28,10 @@ export type StatusPayloadUi = {
   lastGapStatus: number;
   lastGapReason: number;
   bondDeviceCount: number;
+  controllerMode: number;
+  bluetoothEnabled: number;
+  reserved0: number;
+  reserved1: number;
 };
 
 export type FrameMetaUi = {

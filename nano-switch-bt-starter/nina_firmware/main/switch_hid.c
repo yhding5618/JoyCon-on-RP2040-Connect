@@ -53,6 +53,8 @@
 #define SWITCH_SUBCMD_GET_REGULATED_VOLTAGE 0x50u
 
 #define SWITCH_CONTROLLER_TYPE_LEFT_JOYCON 0x01u
+#define SWITCH_CONTROLLER_TYPE_RIGHT_JOYCON 0x02u
+#define SWITCH_CONTROLLER_TYPE_PRO_CONTROLLER 0x03u
 
 #define SWITCH_INPUT_COMMON_BYTES 12u
 #define SWITCH_SUBCOMMAND_REPLY_BYTES 48u
@@ -131,7 +133,6 @@ typedef enum {
   SWITCH_BT_IDENTITY_EVENT_GAP_IDENTITY_API_1 = 0x10u,
 } switch_bt_identity_event_t;
 
-static const char *kLocalName = "Joy-Con (L)";
 static const uint8_t kPeripheralMinorClassGamepad = 0x02;
 static const uint8_t kNintendoBaseMacPrefix[3] = {0xD4u, 0xF0u, 0x57u};
 static const uint8_t kJoyConSdpSubclass = 0x08u;
@@ -209,7 +210,7 @@ static const esp_hidd_qos_param_t kQos = {
 
 static const uint8_t kFallbackAddressBE[6] = {0x02, 0x04, 0x06, 0x08, 0x0A, 0x0C};
 static const uint8_t kNeutralRumble[8] = {0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
-static const uint8_t kSerialNumber[16] = {
+static const uint8_t kSerialNumberTemplate[16] = {
     'C', 'D', 'X', 'L', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '1', 0x00,
 };
 static const uint8_t kFactoryImuCalibration[24] = {
@@ -244,7 +245,13 @@ static sb_status_payload_t s_status = {
     .last_gap_status = 0,
     .last_gap_reason = 0,
     .bond_device_count = 0,
+    .controller_mode = SB_CONTROLLER_MODE_LEFT_JOYCON,
+    .bluetooth_enabled = 0,
+    .reserved0 = 0,
+    .reserved1 = 0,
 };
+static sb_controller_mode_t s_controller_mode = SB_CONTROLLER_MODE_LEFT_JOYCON;
+static bool s_bluetooth_enabled = false;
 static uint64_t s_last_report_us = 0;
 static uint8_t s_report_timer = 0;
 static uint8_t s_player_lights = 0;
@@ -313,6 +320,69 @@ static uint8_t bt_identity_stage_id(const char *stage) {
 
 static uint8_t clamp_size_to_u8(size_t value) {
   return value > 0xFFu ? 0xFFu : (uint8_t)value;
+}
+
+static void reset_controller_runtime_state(void) {
+  memset(&s_state, 0, sizeof(s_state));
+  s_state.hat = 8u;
+  s_state.battery_level = 8u;
+  s_status.battery_level = 8u;
+  s_player_lights = 0u;
+  s_imu_enabled = false;
+  s_vibration_enabled = false;
+  s_shipment_low_power = false;
+  s_last_report_us = 0;
+  s_report_timer = 0;
+}
+
+static const char *active_local_name(void) {
+  switch (s_controller_mode) {
+    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
+      return "Joy-Con (R)";
+    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
+      return "Pro Controller";
+    case SB_CONTROLLER_MODE_LEFT_JOYCON:
+    default:
+      return "Joy-Con (L)";
+  }
+}
+
+static uint8_t active_controller_type(void) {
+  switch (s_controller_mode) {
+    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
+      return SWITCH_CONTROLLER_TYPE_RIGHT_JOYCON;
+    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
+      return SWITCH_CONTROLLER_TYPE_PRO_CONTROLLER;
+    case SB_CONTROLLER_MODE_LEFT_JOYCON:
+    default:
+      return SWITCH_CONTROLLER_TYPE_LEFT_JOYCON;
+  }
+}
+
+static uint8_t active_mac_suffix_xor(void) {
+  switch (s_controller_mode) {
+    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
+      return 0x01u;
+    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
+      return 0x02u;
+    case SB_CONTROLLER_MODE_LEFT_JOYCON:
+    default:
+      return 0x00u;
+  }
+}
+
+static void sync_mode_status(void) {
+  s_status.controller_mode = (uint8_t)s_controller_mode;
+  s_status.bluetooth_enabled = s_bluetooth_enabled ? 1u : 0u;
+  if (s_bluetooth_enabled) {
+    s_status.flags |= SB_STATUS_FLAG_BT_POWERED;
+  } else {
+    s_status.flags &= (uint8_t)~(SB_STATUS_FLAG_BT_POWERED |
+                                SB_STATUS_FLAG_BT_READY |
+                                SB_STATUS_FLAG_HID_READY |
+                                SB_STATUS_FLAG_CONNECTED |
+                                SB_STATUS_FLAG_VIRTUAL_CABLE);
+  }
 }
 
 static void log_bt_identity(const char *stage) {
@@ -395,7 +465,7 @@ static void log_bt_identity(const char *stage) {
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
                SWITCH_BT_IDENTITY_EVENT_HID_DESC_HI_NAME_LEN,
                (uint8_t)((descriptor_len >> 8) & 0xFFu),
-               clamp_size_to_u8(strlen(kLocalName)));
+               clamp_size_to_u8(strlen(active_local_name())));
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
                SWITCH_BT_IDENTITY_EVENT_HID_STRING_LENGTHS,
                clamp_size_to_u8(strlen(kSwitchJoyConApp.name)),
@@ -424,7 +494,7 @@ static void log_bt_identity(const char *stage) {
            base_mac[3],
            base_mac[4],
            base_mac[5],
-           kLocalName,
+           active_local_name(),
            (unsigned int)cod_err,
            (unsigned int)cod.major,
            (unsigned int)cod.minor,
@@ -464,7 +534,7 @@ static void configure_gap_identity(void) {
   esp_err_t cod_err = ESP_OK;
   esp_err_t scan_err = ESP_OK;
 
-  name_err = esp_bt_dev_set_device_name(kLocalName);
+  name_err = esp_bt_dev_set_device_name(active_local_name());
   cod_err = esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
   scan_err = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
   record_event(SB_EVENT_SOURCE_BT_IDENTITY,
@@ -547,6 +617,7 @@ static esp_err_t configure_nintendo_like_base_mac(void) {
 
   memcpy(base_mac, efuse_mac, sizeof(base_mac));
   memcpy(base_mac, kNintendoBaseMacPrefix, sizeof(kNintendoBaseMacPrefix));
+  base_mac[5] ^= active_mac_suffix_xor();
   memcpy(s_intended_base_mac, base_mac, sizeof(s_intended_base_mac));
   s_intended_base_mac_valid = true;
   return esp_base_mac_addr_set(base_mac);
@@ -600,7 +671,8 @@ static void overlay_spi_range(uint32_t request_addr,
 
 static void read_switch_spi_flash(uint32_t address, uint8_t *out, size_t len) {
   uint8_t patchram_addr_record[9] = {0x40, 0x06, 0x00, 0, 0, 0, 0, 0, 0};
-  uint8_t device_type[1] = {SWITCH_CONTROLLER_TYPE_LEFT_JOYCON};
+  uint8_t device_type[1] = {active_controller_type()};
+  uint8_t serial_number[sizeof(kSerialNumberTemplate)];
   uint8_t factory_unknown[1] = {0xA0};
   uint8_t color_info_present[1] = {0x01};
   uint8_t shipment_state[1] = {(uint8_t)(s_shipment_low_power ? 0x01u : 0x00u)};
@@ -612,10 +684,23 @@ static void read_switch_spi_flash(uint32_t address, uint8_t *out, size_t len) {
   memset(out, 0xFF, len);
 
   copy_bt_address_le(&patchram_addr_record[3]);
+  memcpy(serial_number, kSerialNumberTemplate, sizeof(serial_number));
+  switch (s_controller_mode) {
+    case SB_CONTROLLER_MODE_RIGHT_JOYCON:
+      serial_number[3] = 'R';
+      break;
+    case SB_CONTROLLER_MODE_PRO_CONTROLLER:
+      serial_number[3] = 'P';
+      break;
+    case SB_CONTROLLER_MODE_LEFT_JOYCON:
+    default:
+      serial_number[3] = 'L';
+      break;
+  }
 
   overlay_spi_range(address, out, len, 0x0012u, patchram_addr_record, sizeof(patchram_addr_record));
   overlay_spi_range(address, out, len, 0x5000u, shipment_state, sizeof(shipment_state));
-  overlay_spi_range(address, out, len, 0x6000u, kSerialNumber, sizeof(kSerialNumber));
+  overlay_spi_range(address, out, len, 0x6000u, serial_number, sizeof(serial_number));
   overlay_spi_range(address, out, len, 0x6012u, device_type, sizeof(device_type));
   overlay_spi_range(address, out, len, 0x6013u, factory_unknown, sizeof(factory_unknown));
   overlay_spi_range(address, out, len, 0x601Bu, color_info_present, sizeof(color_info_present));
@@ -644,6 +729,11 @@ static uint8_t clamp_u8_count(int value) {
 }
 
 static void refresh_bond_device_count(void) {
+  if (!s_bluetooth_enabled) {
+    s_status.bond_device_count = 0;
+    return;
+  }
+
   s_status.bond_device_count = clamp_u8_count(esp_bt_gap_get_bond_device_num());
 }
 
@@ -723,44 +813,88 @@ static uint32_t hat_to_left_dpad_bits(uint8_t hat) {
 }
 
 static void build_common_input_report(uint8_t report[SWITCH_INPUT_COMMON_BYTES]) {
-  uint32_t buttons = s_state.buttons | hat_to_left_dpad_bits(s_state.hat);
+  const bool reports_left = s_controller_mode != SB_CONTROLLER_MODE_RIGHT_JOYCON;
+  const bool reports_right = s_controller_mode != SB_CONTROLLER_MODE_LEFT_JOYCON;
+  uint32_t buttons = s_state.buttons;
+  uint8_t right_buttons = 0;
   uint8_t left_buttons = 0;
   uint8_t shared_buttons = 0;
 
-  if ((buttons & SB_BTN_LJC_DOWN) != 0u) {
-    left_buttons |= 0x01u;
-  }
-  if ((buttons & SB_BTN_LJC_UP) != 0u) {
-    left_buttons |= 0x02u;
-  }
-  if ((buttons & SB_BTN_LJC_RIGHT) != 0u) {
-    left_buttons |= 0x04u;
-  }
-  if ((buttons & SB_BTN_LJC_LEFT) != 0u) {
-    left_buttons |= 0x08u;
-  }
-  if ((buttons & SB_BTN_LJC_SR) != 0u) {
-    left_buttons |= 0x10u;
-  }
-  if ((buttons & SB_BTN_LJC_SL) != 0u) {
-    left_buttons |= 0x20u;
-  }
-  if ((buttons & SB_BTN_LJC_L) != 0u) {
-    left_buttons |= 0x40u;
-  }
-  if ((buttons & SB_BTN_LJC_ZL) != 0u) {
-    left_buttons |= 0x80u;
+  if (reports_left) {
+    buttons |= hat_to_left_dpad_bits(s_state.hat);
+    if ((buttons & SB_BTN_LJC_DOWN) != 0u) {
+      left_buttons |= 0x01u;
+    }
+    if ((buttons & SB_BTN_LJC_UP) != 0u) {
+      left_buttons |= 0x02u;
+    }
+    if ((buttons & SB_BTN_LJC_RIGHT) != 0u) {
+      left_buttons |= 0x04u;
+    }
+    if ((buttons & SB_BTN_LJC_LEFT) != 0u) {
+      left_buttons |= 0x08u;
+    }
+    if ((buttons & SB_BTN_LJC_SR) != 0u) {
+      left_buttons |= 0x10u;
+    }
+    if ((buttons & SB_BTN_LJC_SL) != 0u) {
+      left_buttons |= 0x20u;
+    }
+    if ((buttons & SB_BTN_LJC_L) != 0u) {
+      left_buttons |= 0x40u;
+    }
+    if ((buttons & SB_BTN_LJC_ZL) != 0u) {
+      left_buttons |= 0x80u;
+    }
+
+    if ((buttons & SB_BTN_LJC_MINUS) != 0u) {
+      shared_buttons |= 0x01u;
+    }
+    if ((buttons & SB_BTN_LJC_STICK) != 0u) {
+      shared_buttons |= 0x08u;
+    }
+    if ((buttons & SB_BTN_LJC_CAPTURE) != 0u) {
+      shared_buttons |= 0x20u;
+    }
   }
 
-  if ((buttons & SB_BTN_LJC_MINUS) != 0u) {
-    shared_buttons |= 0x01u;
+  if (reports_right) {
+    if ((buttons & SB_BTN_RJC_Y) != 0u) {
+      right_buttons |= 0x01u;
+    }
+    if ((buttons & SB_BTN_RJC_X) != 0u) {
+      right_buttons |= 0x02u;
+    }
+    if ((buttons & SB_BTN_RJC_B) != 0u) {
+      right_buttons |= 0x04u;
+    }
+    if ((buttons & SB_BTN_RJC_A) != 0u) {
+      right_buttons |= 0x08u;
+    }
+    if ((buttons & SB_BTN_RJC_SR) != 0u) {
+      right_buttons |= 0x10u;
+    }
+    if ((buttons & SB_BTN_RJC_SL) != 0u) {
+      right_buttons |= 0x20u;
+    }
+    if ((buttons & SB_BTN_RJC_R) != 0u) {
+      right_buttons |= 0x40u;
+    }
+    if ((buttons & SB_BTN_RJC_ZR) != 0u) {
+      right_buttons |= 0x80u;
+    }
+
+    if ((buttons & SB_BTN_RJC_PLUS) != 0u) {
+      shared_buttons |= 0x02u;
+    }
+    if ((buttons & SB_BTN_RJC_STICK) != 0u) {
+      shared_buttons |= 0x04u;
+    }
+    if ((buttons & SB_BTN_RJC_HOME) != 0u) {
+      shared_buttons |= 0x10u;
+    }
   }
-  if ((buttons & SB_BTN_LJC_STICK) != 0u) {
-    shared_buttons |= 0x08u;
-  }
-  if ((buttons & SB_BTN_LJC_CAPTURE) != 0u) {
-    shared_buttons |= 0x20u;
-  }
+
   if ((s_state.misc & SB_MISC_CHARGING_GRIP) != 0u) {
     shared_buttons |= 0x80u;
   }
@@ -768,7 +902,7 @@ static void build_common_input_report(uint8_t report[SWITCH_INPUT_COMMON_BYTES])
   memset(report, 0, SWITCH_INPUT_COMMON_BYTES);
   report[0] = s_report_timer++;
   report[1] = build_battery_and_connection();
-  report[2] = 0x00u;
+  report[2] = right_buttons;
   report[3] = shared_buttons;
   report[4] = left_buttons;
   pack_switch_stick(scale_axis_u12(s_state.lx), scale_axis_u12(s_state.ly), &report[5]);
@@ -777,7 +911,9 @@ static void build_common_input_report(uint8_t report[SWITCH_INPUT_COMMON_BYTES])
 }
 
 static void build_simple_input_report(uint8_t report[SWITCH_SIMPLE_REPORT_BYTES]) {
-  uint32_t buttons = s_state.buttons | hat_to_left_dpad_bits(s_state.hat);
+  const bool reports_left = s_controller_mode != SB_CONTROLLER_MODE_RIGHT_JOYCON;
+  const bool reports_right = s_controller_mode != SB_CONTROLLER_MODE_LEFT_JOYCON;
+  uint32_t buttons = s_state.buttons;
   uint16_t left_x = scale_axis_u16(s_state.lx);
   uint16_t left_y = scale_axis_u16(s_state.ly);
   uint16_t right_x = scale_axis_u16(s_state.rx);
@@ -785,42 +921,82 @@ static void build_simple_input_report(uint8_t report[SWITCH_SIMPLE_REPORT_BYTES]
 
   memset(report, 0, SWITCH_SIMPLE_REPORT_BYTES);
 
-  if ((buttons & SB_BTN_LJC_DOWN) != 0u) {
-    report[0] |= 0x01u;
-  }
-  if ((buttons & SB_BTN_LJC_RIGHT) != 0u) {
-    report[0] |= 0x02u;
-  }
-  if ((buttons & SB_BTN_LJC_LEFT) != 0u) {
-    report[0] |= 0x04u;
-  }
-  if ((buttons & SB_BTN_LJC_UP) != 0u) {
-    report[0] |= 0x08u;
-  }
-  if ((buttons & SB_BTN_LJC_SL) != 0u) {
-    report[0] |= 0x10u;
-  }
-  if ((buttons & SB_BTN_LJC_SR) != 0u) {
-    report[0] |= 0x20u;
+  if (reports_left) {
+    buttons |= hat_to_left_dpad_bits(s_state.hat);
+    if ((buttons & SB_BTN_LJC_DOWN) != 0u) {
+      report[0] |= 0x01u;
+    }
+    if ((buttons & SB_BTN_LJC_RIGHT) != 0u) {
+      report[0] |= 0x02u;
+    }
+    if ((buttons & SB_BTN_LJC_LEFT) != 0u) {
+      report[0] |= 0x04u;
+    }
+    if ((buttons & SB_BTN_LJC_UP) != 0u) {
+      report[0] |= 0x08u;
+    }
+    if ((buttons & SB_BTN_LJC_SL) != 0u) {
+      report[0] |= 0x10u;
+    }
+    if ((buttons & SB_BTN_LJC_SR) != 0u) {
+      report[0] |= 0x20u;
+    }
+
+    if ((buttons & SB_BTN_LJC_MINUS) != 0u) {
+      report[1] |= 0x01u;
+    }
+    if ((buttons & SB_BTN_LJC_STICK) != 0u) {
+      report[1] |= 0x04u;
+    }
+    if ((buttons & SB_BTN_LJC_CAPTURE) != 0u) {
+      report[1] |= 0x20u;
+    }
+    if ((buttons & SB_BTN_LJC_L) != 0u) {
+      report[1] |= 0x40u;
+    }
+    if ((buttons & SB_BTN_LJC_ZL) != 0u) {
+      report[1] |= 0x80u;
+    }
   }
 
-  if ((buttons & SB_BTN_LJC_MINUS) != 0u) {
-    report[1] |= 0x01u;
-  }
-  if ((buttons & SB_BTN_LJC_STICK) != 0u) {
-    report[1] |= 0x04u;
-  }
-  if ((buttons & SB_BTN_LJC_CAPTURE) != 0u) {
-    report[1] |= 0x20u;
-  }
-  if ((buttons & SB_BTN_LJC_L) != 0u) {
-    report[1] |= 0x40u;
-  }
-  if ((buttons & SB_BTN_LJC_ZL) != 0u) {
-    report[1] |= 0x80u;
+  if (reports_right) {
+    if ((buttons & SB_BTN_RJC_Y) != 0u) {
+      report[0] |= 0x01u;
+    }
+    if ((buttons & SB_BTN_RJC_X) != 0u) {
+      report[0] |= 0x02u;
+    }
+    if ((buttons & SB_BTN_RJC_B) != 0u) {
+      report[0] |= 0x04u;
+    }
+    if ((buttons & SB_BTN_RJC_A) != 0u) {
+      report[0] |= 0x08u;
+    }
+    if ((buttons & SB_BTN_RJC_SL) != 0u) {
+      report[0] |= 0x10u;
+    }
+    if ((buttons & SB_BTN_RJC_SR) != 0u) {
+      report[0] |= 0x20u;
+    }
+
+    if ((buttons & SB_BTN_RJC_PLUS) != 0u) {
+      report[1] |= 0x02u;
+    }
+    if ((buttons & SB_BTN_RJC_STICK) != 0u) {
+      report[1] |= 0x08u;
+    }
+    if ((buttons & SB_BTN_RJC_HOME) != 0u) {
+      report[1] |= 0x10u;
+    }
+    if ((buttons & SB_BTN_RJC_R) != 0u) {
+      report[1] |= 0x40u;
+    }
+    if ((buttons & SB_BTN_RJC_ZR) != 0u) {
+      report[1] |= 0x80u;
+    }
   }
 
-  report[2] = (uint8_t)(s_state.hat <= 7u ? s_state.hat : 8u);
+  report[2] = reports_left ? (uint8_t)(s_state.hat <= 7u ? s_state.hat : 8u) : 8u;
   write_le16(&report[3], left_x);
   write_le16(&report[5], left_y);
   write_le16(&report[7], right_x);
@@ -858,7 +1034,7 @@ static void build_device_info_reply(uint8_t reply[SWITCH_DEVICE_INFO_REPLY_BYTES
   memset(reply, 0, SWITCH_DEVICE_INFO_REPLY_BYTES);
   reply[0] = 0x04u;
   reply[1] = 0x00u;
-  reply[2] = SWITCH_CONTROLLER_TYPE_LEFT_JOYCON;
+  reply[2] = active_controller_type();
   reply[3] = 0x02u;
   memcpy(&reply[4], address_be, sizeof(address_be));
   reply[10] = 0x01u;
@@ -1263,45 +1439,144 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
   }
 }
 
-esp_err_t switch_hid_init(void) {
-  esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
-  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-    return err;
+static void keep_first_shutdown_error(esp_err_t err, esp_err_t *first_error) {
+  if (first_error == NULL || err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+    return;
   }
+  if (*first_error == ESP_OK) {
+    *first_error = err;
+  }
+}
+
+static esp_err_t stop_bluetooth(void) {
+  esp_err_t first_error = ESP_OK;
+
+  if (!s_bluetooth_enabled && (s_status.flags & SB_STATUS_FLAG_BT_POWERED) == 0u) {
+    sync_mode_status();
+    return ESP_OK;
+  }
+
+  record_event(SB_EVENT_SOURCE_BRIDGE,
+               SB_MSG_SET_BLUETOOTH_ENABLED,
+               0u,
+               (uint8_t)s_controller_mode);
+
+  if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) != 0u) {
+    esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
+    record_event(SB_EVENT_SOURCE_HID_API, SWITCH_HID_API_EVENT_VC_UNPLUG, (uint8_t)err, 0u);
+    keep_first_shutdown_error(err, &first_error);
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) {
+    esp_err_t err = esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+    keep_first_shutdown_error(err, &first_error);
+
+    err = esp_bt_hid_device_deinit();
+    keep_first_shutdown_error(err, &first_error);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    err = esp_bluedroid_disable();
+    keep_first_shutdown_error(err, &first_error);
+  }
+
+  if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED) {
+    esp_err_t err = esp_bluedroid_deinit();
+    keep_first_shutdown_error(err, &first_error);
+  }
+
+  {
+    const esp_bt_controller_status_t controller_status = esp_bt_controller_get_status();
+    if (controller_status == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+      esp_err_t err = esp_bt_controller_disable();
+      keep_first_shutdown_error(err, &first_error);
+    }
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) {
+      esp_err_t err = esp_bt_controller_deinit();
+      keep_first_shutdown_error(err, &first_error);
+    }
+  }
+
+  s_bluetooth_enabled = false;
+  s_intended_base_mac_valid = false;
+  s_status.protocol_mode = 0;
+  s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
+  s_status.last_hid_conn_status = 0;
+  reset_controller_runtime_state();
+  refresh_bond_device_count();
+  sync_mode_status();
+
+  if (first_error != ESP_OK) {
+    s_status.last_error = (uint8_t)first_error;
+  }
+
+  return first_error;
+}
+
+static esp_err_t start_bluetooth(void) {
+  esp_err_t err = ESP_OK;
+
+  if (s_bluetooth_enabled) {
+    sync_mode_status();
+    return ESP_OK;
+  }
+
+  record_event(SB_EVENT_SOURCE_BRIDGE,
+               SB_MSG_SET_BLUETOOTH_ENABLED,
+               1u,
+               (uint8_t)s_controller_mode);
 
   err = configure_nintendo_like_base_mac();
   if (err != ESP_OK) {
+    s_status.last_error = (uint8_t)err;
     return err;
   }
   log_bt_identity("after_base_mac");
+
+  s_bluetooth_enabled = true;
+  s_status.flags &= (uint8_t)~(SB_STATUS_FLAG_BT_READY |
+                              SB_STATUS_FLAG_HID_READY |
+                              SB_STATUS_FLAG_CONNECTED |
+                              SB_STATUS_FLAG_VIRTUAL_CABLE);
+  sync_mode_status();
 
   {
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     err = esp_bt_controller_init(&bt_cfg);
   }
   if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
     return err;
   }
   log_bt_identity("after_controller_init");
 
   err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
   if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
     return err;
   }
 
   err = esp_bluedroid_init();
   if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
     return err;
   }
 
   err = esp_bluedroid_enable();
   if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
     return err;
   }
   log_bt_identity("after_bluedroid_enable");
 
   err = esp_bt_gap_register_callback(gap_callback);
   if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
     return err;
   }
 
@@ -1312,6 +1587,8 @@ esp_err_t switch_hid_init(void) {
     err = esp_bt_gap_set_security_param(param_type, &iocap, sizeof(iocap));
   }
   if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
     return err;
   }
 #endif
@@ -1322,15 +1599,75 @@ esp_err_t switch_hid_init(void) {
     err = esp_bt_gap_set_pin(pin_type, 0u, pin_code);
   }
   if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
     return err;
   }
 
   err = esp_bt_hid_device_register_callback(hid_callback);
   if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
     return err;
   }
 
-  return esp_bt_hid_device_init();
+  err = esp_bt_hid_device_init();
+  if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
+    return err;
+  }
+
+  refresh_bond_device_count();
+  sync_mode_status();
+  return ESP_OK;
+}
+
+esp_err_t switch_hid_init(void) {
+  esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    return err;
+  }
+
+  s_controller_mode = SB_CONTROLLER_MODE_LEFT_JOYCON;
+  s_bluetooth_enabled = false;
+  s_intended_base_mac_valid = false;
+  s_status.flags = SB_STATUS_FLAG_BRIDGE_READY;
+  s_status.protocol_mode = 0;
+  s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
+  s_status.battery_level = 8;
+  s_status.last_hid_conn_status = 0;
+  reset_controller_runtime_state();
+  refresh_bond_device_count();
+  sync_mode_status();
+  return ESP_OK;
+}
+
+esp_err_t switch_hid_set_controller_mode(sb_controller_mode_t mode) {
+  record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_SET_CONTROLLER_MODE, (uint8_t)mode, 0u);
+
+  if (mode != SB_CONTROLLER_MODE_LEFT_JOYCON &&
+      mode != SB_CONTROLLER_MODE_RIGHT_JOYCON &&
+      mode != SB_CONTROLLER_MODE_PRO_CONTROLLER) {
+    s_status.last_error = (uint8_t)ESP_ERR_INVALID_ARG;
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (s_bluetooth_enabled) {
+    s_status.last_error = (uint8_t)ESP_ERR_INVALID_STATE;
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  s_controller_mode = mode;
+  s_intended_base_mac_valid = false;
+  s_status.input_report_mode = SWITCH_REPORT_STANDARD_FULL;
+  reset_controller_runtime_state();
+  sync_mode_status();
+  return ESP_OK;
+}
+
+esp_err_t switch_hid_set_bluetooth_enabled(bool enabled) {
+  return enabled ? start_bluetooth() : stop_bluetooth();
 }
 
 void switch_hid_apply_state(const sb_controller_state_t *state) {
@@ -1394,7 +1731,8 @@ size_t switch_hid_copy_event_log(sb_event_entry_t *entries,
 void switch_hid_tick(void) {
   uint64_t now = 0;
 
-  if ((s_status.flags & SB_STATUS_FLAG_CONNECTED) == 0u ||
+  if (!s_bluetooth_enabled ||
+      (s_status.flags & SB_STATUS_FLAG_CONNECTED) == 0u ||
       (s_status.flags & SB_STATUS_FLAG_HID_READY) == 0u) {
     return;
   }
@@ -1433,6 +1771,12 @@ void switch_hid_tick(void) {
 }
 
 esp_err_t switch_hid_virtual_cable_unplug(void) {
+  if (!s_bluetooth_enabled) {
+    record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_VIRTUAL_CABLE_UNPLUG, 0u, 0u);
+    s_status.last_error = (uint8_t)ESP_ERR_INVALID_STATE;
+    return ESP_ERR_INVALID_STATE;
+  }
+
   const esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
   record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_VIRTUAL_CABLE_UNPLUG, 0u, 0u);
   record_event(SB_EVENT_SOURCE_HID_API, SWITCH_HID_API_EVENT_VC_UNPLUG, (uint8_t)err, 0u);
@@ -1442,6 +1786,13 @@ esp_err_t switch_hid_virtual_cable_unplug(void) {
 esp_err_t switch_hid_clear_all_bonds(void) {
   esp_err_t result = ESP_OK;
   record_event(SB_EVENT_SOURCE_BRIDGE, SB_MSG_CLEAR_BONDS, 0u, 0u);
+
+  if (!s_bluetooth_enabled) {
+    s_status.last_error = (uint8_t)ESP_ERR_INVALID_STATE;
+    refresh_bond_device_count();
+    return ESP_ERR_INVALID_STATE;
+  }
+
   record_event(SB_EVENT_SOURCE_HID_API,
                SWITCH_HID_API_EVENT_CLEAR_BONDS_BEGIN,
                clamp_u8_count(esp_bt_gap_get_bond_device_num()),
