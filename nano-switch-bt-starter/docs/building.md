@@ -123,7 +123,7 @@ It also selects per-mode Bluedroid bond paths:
 - `bt_rjc`
 - `bt_pro`
 
-`esp_bt_config_file_path_update()` is only available in newer ESP-IDF releases. On the original stock `v4.4.x` toolchain, the firmware logs an error-level diagnostic and still builds, but Bluedroid's internal bond store remains shared unless that API is backported or the project is built on an ESP-IDF version that provides it.
+`esp_bt_config_file_path_update()` is only available in newer ESP-IDF releases. For the original stock `v4.4.x` toolchain, run `host_tools/patch_idf_hid_switch_compat.ps1` before rebuilding; the patch now backports that API so `bt_ljc`, `bt_rjc`, and `bt_pro` become real independent Bluedroid bond stores. If the API is missing, NINA Bluetooth startup now fails instead of silently sharing bonds across modes.
 
 ## Recommended Next Milestones
 

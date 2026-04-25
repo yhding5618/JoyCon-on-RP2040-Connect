@@ -89,7 +89,8 @@
 
 #define SWITCH_HID_USE_JOYCONTROL_DESCRIPTOR 1
 
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0) || \
+    defined(NANO_SWITCH_BT_CONFIG_FILE_PATH_UPDATE_BACKPORT)
 #define SWITCH_HAS_BT_CONFIG_FILE_PATH_UPDATE 1
 #else
 #define SWITCH_HAS_BT_CONFIG_FILE_PATH_UPDATE 0
@@ -1571,9 +1572,9 @@ static esp_err_t configure_bluedroid_bond_path(const nina_mode_cfg_t *cfg) {
 #else
   ESP_LOGE(TAG,
            "[NINA_BT] ESP-IDF %s lacks esp_bt_config_file_path_update(); "
-           "bond namespace remains shared unless this API is backported",
+           "bond namespace would remain shared; run host_tools/patch_idf_hid_switch_compat.ps1",
            IDF_VER);
-  return ESP_OK;
+  return ESP_ERR_NOT_SUPPORTED;
 #endif
 }
 

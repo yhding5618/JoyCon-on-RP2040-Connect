@@ -67,6 +67,140 @@ $hiddConnPath = Get-CheckedFile `
     -Base $resolvedIdfPath `
     -RelativePath "components\bt\host\bluedroid\stack\hid\hidd_conn.c"
 
+$btcConfigPath = Get-CheckedFile `
+    -Base $resolvedIdfPath `
+    -RelativePath "components\bt\host\bluedroid\btc\core\btc_config.c"
+
+$btcConfigHeaderPath = Get-CheckedFile `
+    -Base $resolvedIdfPath `
+    -RelativePath "components\bt\host\bluedroid\btc\include\btc\btc_config.h"
+
+$espBtDevicePath = Get-CheckedFile `
+    -Base $resolvedIdfPath `
+    -RelativePath "components\bt\host\bluedroid\api\esp_bt_device.c"
+
+$espBtDeviceHeaderPath = Get-CheckedFile `
+    -Base $resolvedIdfPath `
+    -RelativePath "components\bt\host\bluedroid\api\include\api\esp_bt_device.h"
+
+Set-TextPatch `
+    -Path $btcConfigPath `
+    -Description "include NVS limits for configurable Bluedroid bond namespace" `
+    -AlreadyPattern '#include\s+"nvs\.h"' `
+    -SearchPattern '#include\s+"stack/bt_types\.h"\s*' `
+    -Replacement @'
+#include "stack/bt_types.h"
+#include "nvs.h"
+
+'@
+
+Set-TextPatch `
+    -Path $btcConfigPath `
+    -Description "make Bluedroid bond config namespace mutable" `
+    -AlreadyPattern 'static\s+char\s+CONFIG_FILE_PATH\[NVS_KEY_NAME_MAX_SIZE\]\s*=\s*"bt_config\.conf";' `
+    -SearchPattern 'static\s+const\s+char\s+\*CONFIG_FILE_PATH\s*=\s*"bt_config\.conf";' `
+    -Replacement 'static char CONFIG_FILE_PATH[NVS_KEY_NAME_MAX_SIZE] = "bt_config.conf";'
+
+Set-TextPatch `
+    -Path $btcConfigPath `
+    -Description "add Bluedroid bond namespace update helper" `
+    -AlreadyPattern 'int\s+btc_config_file_path_update\s*\(' `
+    -SearchPattern 'static\s+config_t\s+\*config;\s*' `
+    -Replacement @'
+static config_t *config;
+
+int btc_config_file_path_update(const char *file_path)
+{
+    if (file_path != NULL && strlen(file_path) < NVS_KEY_NAME_MAX_SIZE) {
+        memcpy(CONFIG_FILE_PATH, file_path, strlen(file_path));
+        CONFIG_FILE_PATH[strlen(file_path)] = '\0';
+        return 0;
+    }
+
+    BTC_TRACE_ERROR("Update failed, file_path is NULL or length should be less than %d\n",
+                    NVS_KEY_NAME_MAX_SIZE);
+    return -1;
+}
+
+'@
+
+Set-TextPatch `
+    -Path $btcConfigHeaderPath `
+    -Description "declare Bluedroid bond namespace update helper" `
+    -AlreadyPattern 'int\s+btc_config_file_path_update\s*\(' `
+    -SearchPattern 'bool\s+btc_config_clean_up\(void\);\s*' `
+    -Replacement @'
+bool btc_config_clean_up(void);
+int btc_config_file_path_update(const char *file_path);
+
+'@
+
+Set-TextPatch `
+    -Path $espBtDevicePath `
+    -Description "include Bluedroid config helper in public BT device API" `
+    -AlreadyPattern '#include\s+"btc/btc_config\.h"' `
+    -SearchPattern '#include\s+"btc/btc_dev\.h"\s*' `
+    -Replacement @'
+#include "btc/btc_dev.h"
+#include "btc/btc_config.h"
+
+'@
+
+Set-TextPatch `
+    -Path $espBtDevicePath `
+    -Description "backport esp_bt_config_file_path_update public API" `
+    -AlreadyPattern 'esp_err_t\s+esp_bt_config_file_path_update\s*\(' `
+    -SearchPattern 'return\s+\(btc_transfer_context\(&msg,\s*&arg,\s*sizeof\(btc_dev_args_t\),\s*NULL,\s*NULL\)\s*==\s*BT_STATUS_SUCCESS\s*\?\s*ESP_OK\s*:\s*ESP_FAIL\);\s*\}\s*' `
+    -Replacement @'
+return (btc_transfer_context(&msg, &arg, sizeof(btc_dev_args_t), NULL, NULL) == BT_STATUS_SUCCESS ? ESP_OK : ESP_FAIL);
+}
+
+esp_err_t esp_bt_config_file_path_update(const char *file_path)
+{
+    ESP_BLUEDROID_STATUS_CHECK(ESP_BLUEDROID_STATUS_UNINITIALIZED);
+    return btc_config_file_path_update(file_path);
+}
+
+'@
+
+Set-TextPatch `
+    -Path $espBtDeviceHeaderPath `
+    -Description "declare esp_bt_config_file_path_update public API" `
+    -AlreadyPattern 'esp_bt_config_file_path_update' `
+    -SearchPattern '#ifdef __cplusplus\s*extern "C" \{\s*#endif\s*' `
+    -Replacement @'
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define NANO_SWITCH_BT_CONFIG_FILE_PATH_UPDATE_BACKPORT 1
+
+'@
+
+Set-TextPatch `
+    -Path $espBtDeviceHeaderPath `
+    -Description "declare esp_bt_config_file_path_update function" `
+    -AlreadyPattern 'esp_err_t\s+esp_bt_config_file_path_update\s*\(' `
+    -SearchPattern 'esp_err_t\s+esp_bt_dev_set_device_name\(const char \*name\);\s*' `
+    -Replacement @'
+esp_err_t esp_bt_dev_set_device_name(const char *name);
+
+/**
+ * @brief Update the NVS namespace used for Bluetooth bond keys.
+ *
+ * This function must be called before esp_bluedroid_init().
+ *
+ * @param[in] file_path NVS namespace name, shorter than NVS_KEY_NAME_MAX_SIZE.
+ *
+ * @return
+ *                  - ESP_OK : Succeed
+ *                  - ESP_ERR_INVALID_STATE : Bluedroid is already initialized
+ *                  - ESP_FAIL : invalid namespace
+ */
+esp_err_t esp_bt_config_file_path_update(const char *file_path);
+
+'@
+
 Set-TextPatch `
     -Path $btTargetPath `
     -Description "increase SDP_MAX_PAD_LEN so the 203-byte Joy-Con descriptor fits in the HID SDP record" `

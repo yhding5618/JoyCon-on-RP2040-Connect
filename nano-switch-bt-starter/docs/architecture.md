@@ -108,7 +108,7 @@ Implemented in the current scaffold:
 
 - independent NVS metadata slots for Left Joy-Con, Right Joy-Con, and Pro Controller modes
 - deterministic per-mode local Bluetooth MAC generation from the NINA factory MAC
-- per-mode Bluedroid bond-path selection when the active ESP-IDF provides `esp_bt_config_file_path_update()`
+- per-mode Bluedroid bond-path selection through `esp_bt_config_file_path_update()` or the project patch's ESP-IDF 4.4.x backport
 - saved Switch host address tracking and conservative reconnect/pairable fallback
 - Joy-Con-style report IDs and a vendor-defined HID descriptor
 - `0x21` subcommand replies for common controller-management requests
