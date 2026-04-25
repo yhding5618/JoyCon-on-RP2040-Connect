@@ -50,6 +50,7 @@ pub fn default_right_joycon_profile() -> Profile {
     bindings.insert("KeyE".to_string(), LogicalAction::SL);
     bindings.insert("KeyU".to_string(), LogicalAction::SR);
     bindings.insert("KeyO".to_string(), LogicalAction::Home);
+    bindings.insert("Home".to_string(), LogicalAction::Home);
     bindings.insert("ShiftRight".to_string(), LogicalAction::Stick);
 
     Profile {
@@ -76,15 +77,22 @@ pub fn default_pro_controller_profile() -> Profile {
     bindings.insert("KeyS".to_string(), LogicalAction::MoveDown);
     bindings.insert("KeyA".to_string(), LogicalAction::MoveLeft);
     bindings.insert("KeyD".to_string(), LogicalAction::MoveRight);
+    bindings.insert("ArrowUp".to_string(), LogicalAction::DpadUp);
+    bindings.insert("ArrowDown".to_string(), LogicalAction::DpadDown);
+    bindings.insert("ArrowLeft".to_string(), LogicalAction::DpadLeft);
+    bindings.insert("ArrowRight".to_string(), LogicalAction::DpadRight);
     bindings.insert("KeyL".to_string(), LogicalAction::A);
     bindings.insert("KeyK".to_string(), LogicalAction::B);
     bindings.insert("KeyI".to_string(), LogicalAction::X);
     bindings.insert("KeyJ".to_string(), LogicalAction::Y);
-    bindings.insert("KeyQ".to_string(), LogicalAction::Minus);
-    bindings.insert("KeyE".to_string(), LogicalAction::L);
-    bindings.insert("KeyU".to_string(), LogicalAction::R);
-    bindings.insert("KeyO".to_string(), LogicalAction::Capture);
-    bindings.insert("Enter".to_string(), LogicalAction::Plus);
+    bindings.insert("F9".to_string(), LogicalAction::Capture);
+    bindings.insert("F10".to_string(), LogicalAction::Home);
+    bindings.insert("KeyE".to_string(), LogicalAction::Minus);
+    bindings.insert("KeyU".to_string(), LogicalAction::Plus);
+    bindings.insert("Digit3".to_string(), LogicalAction::L);
+    bindings.insert("Digit2".to_string(), LogicalAction::ZL);
+    bindings.insert("Digit8".to_string(), LogicalAction::R);
+    bindings.insert("Digit9".to_string(), LogicalAction::ZR);
     bindings.insert("ShiftLeft".to_string(), LogicalAction::Stick);
 
     Profile {

@@ -28,6 +28,10 @@ pub enum LogicalAction {
     MoveDown,
     MoveLeft,
     MoveRight,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
     A,
     B,
     X,
@@ -159,6 +163,21 @@ pub struct FrameMetaUi {
     pub sequence: u8,
     pub payload_len: u8,
     pub crc16: u16,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandLogEntryUi {
+    pub index: u64,
+    pub direction: String,
+    pub message_type: u8,
+    pub message_name: String,
+    pub sequence: u8,
+    pub payload_len: u8,
+    pub crc16: u16,
+    pub details: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +201,7 @@ pub struct DiagnosticsState {
     pub rx_count: u64,
     pub input_rate_hz: f32,
     pub output_rate_hz: f32,
+    pub command_log: Vec<CommandLogEntryUi>,
     pub recent_logs: Vec<String>,
     pub last_serial_error: Option<String>,
     pub last_status: Option<StatusPayloadUi>,

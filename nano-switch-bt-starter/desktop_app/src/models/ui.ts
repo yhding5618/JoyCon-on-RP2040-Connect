@@ -39,6 +39,19 @@ export type FrameMetaUi = {
   sequence: number;
   payloadLen: number;
   crc16: number;
+  details: string;
+};
+
+export type CommandLogEntryUi = {
+  index: number;
+  direction: string;
+  messageType: number;
+  messageName: string;
+  sequence: number;
+  payloadLen: number;
+  crc16: number;
+  details: string;
+  summary: string;
 };
 
 export type EventEntryUi = {
@@ -94,6 +107,7 @@ export type DiagnosticsState = {
   rxCount: number;
   inputRateHz: number;
   outputRateHz: number;
+  commandLog: CommandLogEntryUi[];
   recentLogs: string[];
   lastSerialError: string | null;
   lastStatus: StatusPayloadUi | null;

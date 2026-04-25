@@ -20,6 +20,7 @@ pub fn run() {
         .manage(ManagedAppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state_snapshot,
+            commands::clear_command_log,
             commands::push_input_snapshot,
             commands::set_capture_enabled,
             commands::list_serial_ports,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   clearBondsCommand,
+  clearCommandLogCommand,
   connectSerialCommand,
   disconnectSerialCommand,
   getAppStateSnapshot,
@@ -14,7 +15,7 @@ import {
   tapControllerButtonCommand,
   virtualCableUnplugCommand,
 } from "../lib/bindings";
-import { defaultInputSnapshot } from "../lib/defaults";
+import { defaultInputSnapshot, defaultProControllerProfile } from "../lib/defaults";
 import { useKeyboardCapture } from "./useKeyboardCapture";
 import { useMouseCapture } from "./useMouseCapture";
 import type { InputSnapshot } from "../models/input";
@@ -56,6 +57,27 @@ export function useControllerInput() {
       const snapshot = await getAppStateSnapshot();
       return listSerialPortsCommand(snapshot);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void getAppStateSnapshot()
+        .then((state) => {
+          if (!cancelled) {
+            applySnapshot(state);
+          }
+        })
+        .catch(() => {
+          // Command-triggered calls surface errors; this passive refresh only keeps diagnostics current.
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -212,6 +234,9 @@ export function useControllerInput() {
     requestClearBonds: () => {
       void runCommand("clear-bonds", () => clearBondsCommand());
     },
+    clearCommandLog: () => {
+      void runCommand("clear-command-log", () => clearCommandLogCommand());
+    },
     setControllerMode: (mode: ControllerModel) => {
       keyboard.clear();
       mouse.resetMouseDelta();
@@ -219,6 +244,24 @@ export function useControllerInput() {
       captureEnabledRef.current = false;
       setCaptureEnabledState(false);
       void runCommand("set-mode", () => setControllerModeCommand(mode));
+    },
+    turnOnBluetoothWithMode: (mode: ControllerModel) => {
+      keyboard.clear();
+      mouse.resetMouseDelta();
+      mouse.releasePointerLock();
+      captureEnabledRef.current = false;
+      setCaptureEnabledState(false);
+
+      void runCommand("bluetooth-mode-on", async () => {
+        await setControllerModeCommand(mode);
+        const bluetoothState = await setBluetoothEnabledCommand(true);
+
+        if (bluetoothState.serial.lastStatus?.bluetoothEnabled !== 1) {
+          return bluetoothState;
+        }
+
+        return setCaptureEnabledCommand(true);
+      });
     },
     setBluetoothEnabled: (enabled: boolean) => {
       if (!enabled) {
@@ -337,23 +380,8 @@ function defaultAppStateSnapshot(): AppStateSnapshot {
       lastStatus: null,
     },
     profile: {
-      activeProfileId: "default-left-joycon",
-      activeProfile: {
-        id: "default-left-joycon",
-        name: "Default Left Joy-Con",
-        controllerModel: "LeftJoyCon",
-        bindings: {},
-        mouse: {
-          enabled: false,
-          sensitivityX: 1,
-          sensitivityY: 1,
-          invertY: false,
-          deadzone: 0.05,
-          smoothing: 0.2,
-          decayMs: 40,
-        },
-        outputRateHz: 125,
-      },
+      activeProfileId: defaultProControllerProfile.id,
+      activeProfile: defaultProControllerProfile,
     },
     input: {
       pressedCodes: [],
@@ -380,6 +408,7 @@ function defaultAppStateSnapshot(): AppStateSnapshot {
       rxCount: 0,
       inputRateHz: 0,
       outputRateHz: 0,
+      commandLog: [],
       recentLogs: [],
       lastSerialError: null,
       lastStatus: null,

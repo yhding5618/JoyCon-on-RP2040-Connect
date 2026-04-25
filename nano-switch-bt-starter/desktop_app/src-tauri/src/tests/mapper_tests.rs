@@ -1,7 +1,8 @@
 use crate::bridge_protocol::{
     BTN_LJC_CAPTURE, BTN_LJC_DOWN, BTN_LJC_L, BTN_LJC_LEFT, BTN_LJC_MINUS, BTN_LJC_RIGHT,
-    BTN_LJC_SL, BTN_LJC_SR, BTN_LJC_STICK, BTN_LJC_UP, BTN_RJC_A, BTN_RJC_B, BTN_RJC_HOME,
-    BTN_RJC_PLUS, BTN_RJC_R, BTN_RJC_SL, BTN_RJC_SR, BTN_RJC_STICK, BTN_RJC_X, BTN_RJC_Y,
+    BTN_LJC_SL, BTN_LJC_SR, BTN_LJC_STICK, BTN_LJC_UP, BTN_LJC_ZL, BTN_RJC_A, BTN_RJC_B,
+    BTN_RJC_HOME, BTN_RJC_PLUS, BTN_RJC_R, BTN_RJC_SL, BTN_RJC_SR, BTN_RJC_STICK, BTN_RJC_X,
+    BTN_RJC_Y, BTN_RJC_ZR,
 };
 use crate::controller_mapper::map_input_to_controller;
 use crate::model::{InputSnapshot, LatestInputState};
@@ -109,6 +110,7 @@ fn mapper_uses_default_right_joycon_bindings() {
     );
     assert_eq!((controller.lx, controller.ly), (0, 0));
     assert_eq!((controller.rx, controller.ry), (-STICK_EXTENT, 0));
+    assert_eq!(state_for(&profile, &["Home"]).buttons, BTN_RJC_HOME);
 }
 
 #[test]
@@ -158,11 +160,16 @@ fn mapper_uses_default_pro_controller_bindings() {
         &[
             "KeyW",
             "KeyL",
-            "KeyQ",
             "KeyE",
             "KeyU",
-            "KeyO",
-            "Enter",
+            "F9",
+            "F10",
+            "Digit3",
+            "Digit2",
+            "Digit8",
+            "Digit9",
+            "ArrowUp",
+            "ArrowRight",
             "ShiftLeft",
         ],
     );
@@ -171,14 +178,21 @@ fn mapper_uses_default_pro_controller_bindings() {
         controller.buttons,
         BTN_RJC_A
             | BTN_LJC_MINUS
-            | BTN_LJC_L
-            | BTN_RJC_R
-            | BTN_LJC_CAPTURE
             | BTN_RJC_PLUS
+            | BTN_LJC_L
+            | BTN_LJC_ZL
+            | BTN_RJC_R
+            | BTN_RJC_ZR
+            | BTN_LJC_CAPTURE
+            | BTN_RJC_HOME
             | BTN_LJC_STICK
+            | BTN_LJC_UP
+            | BTN_LJC_RIGHT
     );
     assert_eq!((controller.lx, controller.ly), (0, STICK_EXTENT));
     assert_eq!((controller.rx, controller.ry), (0, 0));
+    assert_eq!(state_for(&profile, &["F9"]).buttons, BTN_LJC_CAPTURE);
+    assert_eq!(state_for(&profile, &["F10"]).buttons, BTN_RJC_HOME);
 }
 
 #[test]

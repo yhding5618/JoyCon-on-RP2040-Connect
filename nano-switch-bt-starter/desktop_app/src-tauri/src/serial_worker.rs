@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use serialport::{ClearBuffer, SerialPort, SerialPortType};
 
 use crate::bridge_protocol::{
-    scan_frames, ControllerStatePayload, EventDumpPayload, Frame, MessageType, StatusPayload,
+    scan_frames, ControllerStatePayload, EventDumpPayload, Frame, MessageType, PairingInfoPayload,
+    StatusPayload, CONTROLLER_STATE_BYTES,
 };
 use crate::model::{EventEntryUi, FrameMetaUi, SerialPortInfoUi, StatusPayloadUi};
 
@@ -508,7 +509,182 @@ fn frame_meta(frame: &Frame) -> FrameMetaUi {
         sequence: frame.header.sequence,
         payload_len: frame.header.payload_len,
         crc16: frame.header.crc16,
+        details: describe_frame_payload(frame),
     }
+}
+
+fn describe_frame_payload(frame: &Frame) -> String {
+    match MessageType::try_from(frame.header.message_type) {
+        Ok(MessageType::Hello) => describe_hello_payload(&frame.payload),
+        Ok(MessageType::GetStatus) => "request status".to_string(),
+        Ok(MessageType::Status) => describe_status_payload(&frame.payload),
+        Ok(MessageType::GetEvents) => "request event log".to_string(),
+        Ok(MessageType::Events) => describe_events_payload(&frame.payload),
+        Ok(MessageType::SetState) => describe_controller_state_payload(&frame.payload),
+        Ok(MessageType::VirtualCableUnplug) => {
+            "forget active-mode pairing / virtual cable unplug".to_string()
+        }
+        Ok(MessageType::ClearBonds) => "clear all Bluetooth bonds".to_string(),
+        Ok(MessageType::SetControllerMode) => describe_set_controller_mode_payload(&frame.payload),
+        Ok(MessageType::SetBluetoothEnabled) => {
+            describe_set_bluetooth_enabled_payload(&frame.payload)
+        }
+        Ok(MessageType::PairingStart) => "enter pairable/discoverable mode".to_string(),
+        Ok(MessageType::PairingForgetCurrentMode) => "forget active-mode pairing".to_string(),
+        Ok(MessageType::PairingGetInfo) => "request active-mode pairing metadata".to_string(),
+        Ok(MessageType::PairingInfo) => describe_pairing_info_payload(&frame.payload),
+        Err(_) => format!("raw payload {}", hex_payload(&frame.payload)),
+    }
+}
+
+fn describe_hello_payload(payload: &[u8]) -> String {
+    if payload.len() < 8 {
+        return format!("invalid HELLO payload len={}", payload.len());
+    }
+
+    let endpoint = payload[0];
+    let flags = payload[1];
+    let max_payload = u16::from_le_bytes([payload[2], payload[3]]);
+    let link_baud = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+    format!(
+        "endpoint={} flags=0x{flags:02X} max_payload={} baud={}",
+        endpoint_name(endpoint),
+        max_payload,
+        link_baud
+    )
+}
+
+fn describe_status_payload(payload: &[u8]) -> String {
+    match StatusPayload::decode(payload) {
+        Ok(status) => format!(
+            "mode={} bluetooth={} battery={} bonds={}",
+            controller_mode_name(status.controller_mode),
+            on_off(status.bluetooth_enabled != 0),
+            status.battery_level,
+            status.bond_device_count
+        ),
+        Err(error) => format!("invalid STATUS payload: {error}"),
+    }
+}
+
+fn describe_events_payload(payload: &[u8]) -> String {
+    match EventDumpPayload::decode(payload) {
+        Ok(events) => format!(
+            "chunk {}/{} entries={} total={} first_seq={} overflow={}",
+            u16::from(events.chunk_index) + 1,
+            events.chunk_count,
+            events.entry_count,
+            events.total_entries,
+            events.first_sequence,
+            yes_no(events.overflowed)
+        ),
+        Err(error) => format!("invalid EVENTS payload: {error}"),
+    }
+}
+
+fn describe_controller_state_payload(payload: &[u8]) -> String {
+    if payload.len() != CONTROLLER_STATE_BYTES {
+        return format!("invalid SET_STATE payload len={}", payload.len());
+    }
+
+    let buttons = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+    let lx = i16::from_le_bytes([payload[4], payload[5]]);
+    let ly = i16::from_le_bytes([payload[6], payload[7]]);
+    let rx = i16::from_le_bytes([payload[8], payload[9]]);
+    let ry = i16::from_le_bytes([payload[10], payload[11]]);
+    let hat = payload[12];
+    let misc = payload[13];
+    let battery = payload[14];
+
+    if buttons == 0 && lx == 0 && ly == 0 && rx == 0 && ry == 0 && hat == 8 && misc == 0 {
+        return format!("neutral state battery={battery}");
+    }
+
+    format!(
+        "buttons=0x{buttons:08X} lx={lx} ly={ly} rx={rx} ry={ry} hat={hat} misc=0x{misc:02X} battery={battery}"
+    )
+}
+
+fn describe_set_controller_mode_payload(payload: &[u8]) -> String {
+    match payload.first() {
+        Some(mode) => format!("mode={}", controller_mode_name(*mode)),
+        None => "missing mode byte".to_string(),
+    }
+}
+
+fn describe_set_bluetooth_enabled_payload(payload: &[u8]) -> String {
+    match payload.first() {
+        Some(enabled) => format!("bluetooth={}", on_off(*enabled != 0)),
+        None => "missing bluetooth byte".to_string(),
+    }
+}
+
+fn describe_pairing_info_payload(payload: &[u8]) -> String {
+    match PairingInfoPayload::decode(payload) {
+        Ok(info) => format!(
+            "mode={} local={} saved_host={} host={} bonded={} bt_state=0x{:02X}",
+            controller_mode_name(info.mode),
+            format_bd_addr(&info.local_bt_mac),
+            yes_no(info.has_saved_host),
+            format_bd_addr(&info.saved_switch_bd_addr),
+            yes_no(info.is_bonded),
+            info.bt_state
+        ),
+        Err(error) => format!("invalid PAIRING_INFO payload: {error}"),
+    }
+}
+
+fn endpoint_name(endpoint: u8) -> &'static str {
+    match endpoint {
+        0x01 => "HOST",
+        0x02 => "RP2040",
+        0x03 => "NINA",
+        _ => "UNKNOWN",
+    }
+}
+
+fn controller_mode_name(mode: u8) -> &'static str {
+    match mode {
+        0x00 => "Left Joy-Con",
+        0x01 => "Right Joy-Con",
+        0x02 => "Pro Controller",
+        _ => "Unknown",
+    }
+}
+
+fn on_off(enabled: bool) -> &'static str {
+    if enabled {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn format_bd_addr(addr: &[u8; 6]) -> String {
+    format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]
+    )
+}
+
+fn hex_payload(payload: &[u8]) -> String {
+    if payload.is_empty() {
+        return "empty".to_string();
+    }
+
+    payload
+        .iter()
+        .map(|value| format!("{value:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn port_info_to_ui(info: &serialport::SerialPortInfo) -> SerialPortInfoUi {

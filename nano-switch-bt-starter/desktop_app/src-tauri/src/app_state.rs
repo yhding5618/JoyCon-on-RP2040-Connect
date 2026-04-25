@@ -11,7 +11,7 @@ use crate::model::{
     ActiveProfileState, AppStateSnapshot, ConnectionState, DiagnosticsState, LatestInputState,
     SerialSessionState,
 };
-use crate::profiles::default_left_joycon_profile;
+use crate::profiles::default_pro_controller_profile;
 use crate::serial_worker::{SerialWorkerHandle, WorkerCommand, WorkerReply};
 
 const DEFAULT_OUTPUT_RATE_HZ: u16 = 125;
@@ -92,7 +92,7 @@ fn spawn_output_loop(
     control_in_flight: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        let mut was_streaming = false;
+        let mut last_sent_state: Option<ControllerStatePayload> = None;
         let mut consecutive_output_errors = 0u8;
 
         loop {
@@ -107,63 +107,62 @@ fn spawn_output_loop(
                 )
             };
 
-            let send_neutral = connected && was_streaming && !capture_enabled && !control_busy;
-            let send_live_state = connected && capture_enabled && !control_busy;
+            if !connected || !capture_enabled {
+                last_sent_state = None;
+                consecutive_output_errors = 0;
+            } else {
+                let should_send_live_state = !control_busy
+                    && Some(controller) != last_sent_state
+                    && (controller != ControllerStatePayload::default()
+                        || last_sent_state.is_some());
 
-            if send_live_state || send_neutral {
-                let payload = if send_live_state {
-                    controller
-                } else {
-                    ControllerStatePayload::default()
-                };
+                if should_send_live_state {
+                    match worker.request(WorkerCommand::SendState(controller)) {
+                        Ok(WorkerReply::StateSent {
+                            tx_frames,
+                            rx_frames,
+                        }) => {
+                            let mut state = inner.write().expect("app state lock poisoned");
+                            note_serial_frames(&mut state.diagnostics, &tx_frames, &rx_frames);
+                            state.serial.last_connect_error = None;
+                            last_sent_state = Some(controller);
+                            consecutive_output_errors = 0;
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            consecutive_output_errors = consecutive_output_errors.saturating_add(1);
+                            let should_halt = consecutive_output_errors >= OUTPUT_ERROR_LIMIT;
 
-                match worker.request(WorkerCommand::SendState(payload)) {
-                    Ok(WorkerReply::StateSent {
-                        tx_frames,
-                        rx_frames,
-                    }) => {
-                        let mut state = inner.write().expect("app state lock poisoned");
-                        note_serial_frames(&mut state.diagnostics, &tx_frames, &rx_frames);
-                        state.serial.last_connect_error = None;
-                        consecutive_output_errors = 0;
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        consecutive_output_errors = consecutive_output_errors.saturating_add(1);
-                        let should_halt =
-                            send_neutral || consecutive_output_errors >= OUTPUT_ERROR_LIMIT;
+                            let mut state = inner.write().expect("app state lock poisoned");
+                            state.serial.last_connect_error = Some(error.clone());
+                            note_serial_error(&mut state.diagnostics, error.clone());
 
-                        let mut state = inner.write().expect("app state lock poisoned");
-                        state.serial.last_connect_error = Some(error.clone());
-                        note_serial_error(&mut state.diagnostics, error.clone());
-
-                        if should_halt {
-                            state.serial.connection_state = ConnectionState::Error;
-                            state.input.capture_enabled = false;
-                            state.input.release_all();
-                            state.controller = ControllerStatePayload::default();
-                            sync_runtime_metrics(&mut state);
-                            push_log(
-                                &mut state.diagnostics,
-                                format!(
-                                    "output loop halted after {consecutive_output_errors} serial write failures"
-                                ),
-                            );
-                        } else {
-                            push_log(
-                                &mut state.diagnostics,
-                                format!(
-                                    "output frame failed ({consecutive_output_errors}/{OUTPUT_ERROR_LIMIT}); backing off"
-                                ),
-                            );
+                            if should_halt {
+                                state.serial.connection_state = ConnectionState::Error;
+                                state.input.capture_enabled = false;
+                                state.input.release_all();
+                                state.controller = ControllerStatePayload::default();
+                                sync_runtime_metrics(&mut state);
+                                push_log(
+                                    &mut state.diagnostics,
+                                    format!(
+                                        "output loop halted after {consecutive_output_errors} serial write failures"
+                                    ),
+                                );
+                            } else {
+                                push_log(
+                                    &mut state.diagnostics,
+                                    format!(
+                                        "output frame failed ({consecutive_output_errors}/{OUTPUT_ERROR_LIMIT}); backing off"
+                                    ),
+                                );
+                            }
                         }
                     }
+                } else {
+                    consecutive_output_errors = 0;
                 }
-            } else {
-                consecutive_output_errors = 0;
             }
-
-            was_streaming = send_live_state;
 
             if consecutive_output_errors > 0 {
                 thread::sleep(Duration::from_millis(OUTPUT_ERROR_BACKOFF_MS));
@@ -203,7 +202,7 @@ fn effective_output_rate_hz(output_rate_hz: u16) -> u16 {
 }
 
 fn initial_state() -> AppStateSnapshot {
-    let profile = default_left_joycon_profile();
+    let profile = default_pro_controller_profile();
 
     AppStateSnapshot {
         serial: SerialSessionState {
@@ -234,6 +233,7 @@ fn initial_state() -> AppStateSnapshot {
             rx_count: 0,
             input_rate_hz: 0.0,
             output_rate_hz: 0.0,
+            command_log: Vec::new(),
             recent_logs: vec!["App scaffold initialized".to_string()],
             last_serial_error: None,
             last_status: None,

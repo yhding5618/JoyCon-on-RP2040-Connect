@@ -29,6 +29,15 @@ pub fn get_app_state_snapshot(state: State<'_, ManagedAppState>) -> AppStateSnap
 }
 
 #[tauri::command]
+pub fn clear_command_log(state: State<'_, ManagedAppState>) -> AppStateSnapshot {
+    state.update(|app_state| {
+        app_state.diagnostics.command_log.clear();
+        push_log(&mut app_state.diagnostics, "command log cleared");
+        app_state.clone()
+    })
+}
+
+#[tauri::command]
 pub async fn set_capture_enabled(
     enabled: bool,
     state: State<'_, ManagedAppState>,
@@ -308,11 +317,14 @@ pub async fn set_controller_mode(
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
     let state = state.inner().clone();
-    let _ = release_controller_state_if_needed(&state).await?;
+    let released = release_controller_state_if_needed(&state).await?;
     state.update(|app_state| {
         app_state.input.capture_enabled = false;
         app_state.input.release_all();
         app_state.controller = ControllerStatePayload::default();
+        if let Some((release_tx, release_rx)) = &released {
+            note_serial_frames(&mut app_state.diagnostics, release_tx, release_rx);
+        }
         sync_runtime_metrics(app_state);
     });
 
@@ -356,10 +368,10 @@ pub async fn set_bluetooth_enabled(
             tx_frames,
             rx_frames,
         } => Ok(state.update(|app_state| {
-            note_serial_frames(&mut app_state.diagnostics, &tx_frames, &rx_frames);
             if let Some((release_tx, release_rx)) = &released {
                 note_serial_frames(&mut app_state.diagnostics, release_tx, release_rx);
             }
+            note_serial_frames(&mut app_state.diagnostics, &tx_frames, &rx_frames);
             if let Some(status) = status {
                 apply_status_update(app_state, status);
             }
@@ -488,6 +500,10 @@ fn controller_button_bits(button: &str, controller_model: ControllerModel) -> Re
             "b" => Ok(BTN_RJC_B),
             "x" => Ok(BTN_RJC_X),
             "y" => Ok(BTN_RJC_Y),
+            "down" => Ok(BTN_LJC_DOWN),
+            "up" => Ok(BTN_LJC_UP),
+            "right" => Ok(BTN_LJC_RIGHT),
+            "left" => Ok(BTN_LJC_LEFT),
             "l" => Ok(BTN_LJC_L),
             "r" => Ok(BTN_RJC_R),
             "zl" => Ok(BTN_LJC_ZL),

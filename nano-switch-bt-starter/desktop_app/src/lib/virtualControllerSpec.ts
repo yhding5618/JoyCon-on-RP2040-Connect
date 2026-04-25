@@ -117,6 +117,10 @@ export const CONTROLLER_BUTTON_BITS: Record<
     capture: 1 << 26,
   },
   ProController: {
+    down: 1 << 0,
+    up: 1 << 1,
+    right: 1 << 2,
+    left: 1 << 3,
     y: 1 << 16,
     x: 1 << 17,
     b: 1 << 18,
@@ -214,10 +218,10 @@ export const VIRTUAL_CONTROLLER_LAYOUTS: Record<
         tapId: "stick",
         actions: ["Stick", "MoveUp", "MoveDown", "MoveLeft", "MoveRight"],
       },
-      { id: "up", label: "Up", kind: "dpad", slot: "dpad-up" },
-      { id: "left", label: "Lt", kind: "dpad", slot: "dpad-left" },
-      { id: "right", label: "Rt", kind: "dpad", slot: "dpad-right" },
-      { id: "down", label: "Dn", kind: "dpad", slot: "dpad-down" },
+      { id: "up", label: "Up", kind: "dpad", slot: "dpad-up", actions: ["DpadUp"] },
+      { id: "left", label: "Lt", kind: "dpad", slot: "dpad-left", actions: ["DpadLeft"] },
+      { id: "right", label: "Rt", kind: "dpad", slot: "dpad-right", actions: ["DpadRight"] },
+      { id: "down", label: "Dn", kind: "dpad", slot: "dpad-down", actions: ["DpadDown"] },
       { id: "x", label: "X", kind: "button", slot: "face-x", tapId: "x", actions: ["X"] },
       { id: "y", label: "Y", kind: "button", slot: "face-y", tapId: "y", actions: ["Y"] },
       { id: "a", label: "A", kind: "button", slot: "face-a", tapId: "a", actions: ["A"] },
@@ -357,5 +361,9 @@ export function actionLabel(action: LogicalAction): string {
   if (action === "MoveDown") return "Move Down";
   if (action === "MoveLeft") return "Move Left";
   if (action === "MoveRight") return "Move Right";
+  if (action === "DpadUp") return "D-pad Up";
+  if (action === "DpadDown") return "D-pad Down";
+  if (action === "DpadLeft") return "D-pad Left";
+  if (action === "DpadRight") return "D-pad Right";
   return action;
 }

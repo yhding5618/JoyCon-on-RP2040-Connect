@@ -1,3 +1,4 @@
+import { CommandLogPanel } from "./components/CommandLogPanel";
 import { ControllerPreview } from "./components/ControllerPreview";
 import { SerialPanel } from "./components/SerialPanel";
 import { useControllerInput } from "./hooks/useControllerInput";
@@ -16,10 +17,8 @@ export default function App() {
     refreshPorts,
     connectSerial,
     disconnectSerial,
-    requestStatus,
-    requestVirtualCableUnplug,
-    requestClearBonds,
-    setControllerMode,
+    clearCommandLog,
+    turnOnBluetoothWithMode,
     setBluetoothEnabled,
     tapControllerButton,
   } = useControllerInput();
@@ -33,10 +32,6 @@ export default function App() {
         <div>
           <p className="eyebrow">Rust + Tauri MVP</p>
           <h1>Nano Switch Desktop</h1>
-          <p className="hero-copy">
-            Focused-window capture, Rust-owned mapping, and the existing
-            RP2040 bridge protocol.
-          </p>
         </div>
         <div className="hero-status">
           <span
@@ -55,34 +50,36 @@ export default function App() {
       {error ? <div className="app-error">{error}</div> : null}
 
       <section className="layout-grid">
-        <div className="column-stack">
+        <div className="column-stack utility-column">
           <SerialPanel
             serial={appState.serial}
-            controllerModel={appState.profile.activeProfile.controllerModel}
             loading={isBusy}
             onRefreshPorts={refreshPorts}
             onSelectPort={selectSerialPort}
             onConnect={connectSerial}
             onDisconnect={disconnectSerial}
-            onGetStatus={requestStatus}
-            onVirtualCableUnplug={requestVirtualCableUnplug}
-            onClearBonds={requestClearBonds}
-            onSetControllerMode={setControllerMode}
-            onSetBluetoothEnabled={setBluetoothEnabled}
+          />
+          <CommandLogPanel
+            entries={appState.diagnostics.commandLog}
+            onClear={clearCommandLog}
           />
         </div>
 
-        <div className="column-stack">
+        <div className="column-stack main-workbench">
           <ControllerPreview
             profile={appState.profile.activeProfile}
+            serial={appState.serial}
             controller={appState.controller}
             latestSnapshot={latestSnapshot}
             captureEnabled={captureEnabled}
+            loading={isBusy}
             observedPressedCodes={visiblePressedCodes}
             directTapOverlay={directTapOverlay}
             directTapAvailable={
               appState.serial.connectionState === "Connected" && !isBusy
             }
+            onTurnOnBluetoothWithMode={turnOnBluetoothWithMode}
+            onSetBluetoothEnabled={setBluetoothEnabled}
             onTapControllerButton={tapControllerButton}
           />
         </div>

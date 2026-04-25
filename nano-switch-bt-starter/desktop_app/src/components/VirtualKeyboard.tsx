@@ -42,7 +42,10 @@ export function VirtualKeyboard({
                       <span
                         className="virtual-keyboard__spacer"
                         key={key.code}
-                        style={{ flexGrow: width, flexBasis: `${width * 42}px` }}
+                        style={{
+                          flexGrow: width,
+                          flexBasis: `calc(var(--keyboard-key-unit) * ${width})`,
+                        }}
                       />
                     );
                   }
@@ -64,7 +67,10 @@ export function VirtualKeyboard({
                       className={className}
                       key={key.code}
                       data-key-code={key.code}
-                      style={{ flexGrow: width, flexBasis: `${width * 42}px` }}
+                      style={{
+                        flexGrow: width,
+                        flexBasis: `calc(var(--keyboard-key-unit) * ${width})`,
+                      }}
                     >
                       <span className="virtual-key__label">{key.label}</span>
                       {mappedLabel ? (

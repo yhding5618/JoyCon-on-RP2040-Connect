@@ -73,7 +73,7 @@ select {
 }
 
 .app-shell {
-  max-width: 1440px;
+  max-width: 1720px;
   margin: 0 auto;
   padding: 2rem;
 }
@@ -99,13 +99,6 @@ select {
   margin: 0;
   font-size: 3rem;
   line-height: 0.96;
-}
-
-.hero-copy {
-  max-width: 50rem;
-  margin: 0.8rem 0 0;
-  color: var(--muted);
-  font-size: 1rem;
 }
 
 .hero-status {
@@ -136,7 +129,14 @@ select {
 .layout-grid {
   display: grid;
   gap: 1.25rem;
-  grid-template-columns: minmax(320px, 0.78fr) minmax(520px, 1.35fr);
+  grid-template-columns: minmax(320px, 420px) minmax(760px, 1fr);
+  align-items: stretch;
+  height: calc(100vh - 9rem);
+  min-height: 560px;
+}
+
+.layout-grid > * {
+  min-width: 0;
 }
 
 .app-error {
@@ -151,6 +151,17 @@ select {
 .column-stack {
   display: grid;
   gap: 1.25rem;
+  min-height: 0;
+}
+
+.utility-column {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.main-workbench {
+  min-width: 0;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
 }
 
 .panel {
@@ -199,6 +210,17 @@ select {
 .panel-grid {
   display: grid;
   gap: 0.85rem;
+}
+
+.serial-connect-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.7rem;
+}
+
+.serial-connect-row__port {
+  min-width: 0;
 }
 
 .button-row {
@@ -266,6 +288,77 @@ select {
   gap: 0.55rem;
 }
 
+.command-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: min(48vh, 520px);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.command-log-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.command-log-panel .command-log {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.command-log__entry {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.command-log__entry--tx {
+  border-left-color: var(--accent);
+}
+
+.command-log__entry--rx {
+  border-left-color: var(--success);
+}
+
+.command-log__main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-family: "Consolas", "Cascadia Code", monospace;
+  font-size: 0.86rem;
+}
+
+.command-log__direction {
+  color: var(--muted);
+}
+
+.command-log__meta {
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-family: "Consolas", "Cascadia Code", monospace;
+  font-size: 0.78rem;
+}
+
+.command-log__details {
+  margin-top: 0.35rem;
+  color: var(--text);
+  font-family: "Consolas", "Cascadia Code", monospace;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .mono-chip {
   display: inline-flex;
   align-items: center;
@@ -317,12 +410,42 @@ select {
 
 .controller-stage {
   display: grid;
-  gap: 1.1rem;
+  gap: 0.7rem;
+}
+
+.controller-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.controller-panel .controller-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.controller-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.controller-toolbar__mode {
+  display: grid;
+  gap: 0.25rem;
+  min-width: min(100%, 260px);
 }
 
 .controller-stage__controller {
-  overflow-x: auto;
-  padding-bottom: 0.15rem;
+  overflow: visible;
+  padding-top: 6px;
+  padding-bottom: 0.1rem;
 }
 
 .stage-section-header {
@@ -330,7 +453,7 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  margin-bottom: 0.65rem;
+  margin-bottom: 0.45rem;
 }
 
 .stage-section-header h2 {
@@ -537,18 +660,165 @@ select {
 .virtual-control--zr { grid-area: zr; }
 .virtual-control--r { grid-area: r; }
 
+.virtual-controller--pro-controller.virtual-controller--svg-controller {
+  width: min(540px, 100%);
+  aspect-ratio: 38.107548 / 27.544682;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  display: block;
+  overflow: visible;
+}
+
+.virtual-controller--svg-controller svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.28));
+}
+
+.virtual-controller--svg-controller .a-button,
+.virtual-controller--svg-controller .b-button,
+.virtual-controller--svg-controller .x-button,
+.virtual-controller--svg-controller .y-button,
+.virtual-controller--svg-controller .minus-button,
+.virtual-controller--svg-controller .plus-button,
+.virtual-controller--svg-controller .capture-button,
+.virtual-controller--svg-controller .home-button,
+.virtual-controller--svg-controller .l-button,
+.virtual-controller--svg-controller .r-button,
+.virtual-controller--svg-controller .left-joystick,
+.virtual-controller--svg-controller .right-joystick,
+.virtual-controller--svg-controller .d-pad,
+.virtual-controller--svg-controller .d-pad-up,
+.virtual-controller--svg-controller .d-pad-down,
+.virtual-controller--svg-controller .d-pad-left,
+.virtual-controller--svg-controller .d-pad-right {
+  transition:
+    fill 100ms ease,
+    stroke 100ms ease,
+    filter 100ms ease;
+}
+
+.virtual-controller--svg-controller.is-direct-tap-ready .a-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .b-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .x-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .y-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .minus-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .plus-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .capture-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .home-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .l-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .r-button,
+.virtual-controller--svg-controller.is-direct-tap-ready .left-joystick {
+  cursor: pointer;
+}
+
+.virtual-controller--svg-controller.is-direct-tap-ready .a-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .b-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .x-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .y-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .minus-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .plus-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .capture-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .home-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .l-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .r-button:hover,
+.virtual-controller--svg-controller.is-direct-tap-ready .left-joystick:hover {
+  filter: drop-shadow(0 0 0.42px rgba(121, 216, 255, 0.72))
+    drop-shadow(0 0 1.2px rgba(65, 185, 234, 0.48));
+}
+
+.virtual-controller--svg-controller.is-a-button-active .a-button,
+.virtual-controller--svg-controller.is-b-button-active .b-button,
+.virtual-controller--svg-controller.is-x-button-active .x-button,
+.virtual-controller--svg-controller.is-y-button-active .y-button,
+.virtual-controller--svg-controller.is-minus-button-active .minus-button,
+.virtual-controller--svg-controller.is-plus-button-active .plus-button,
+.virtual-controller--svg-controller.is-capture-button-active .capture-button,
+.virtual-controller--svg-controller.is-home-button-active .home-button,
+.virtual-controller--svg-controller.is-l-button-active .l-button,
+.virtual-controller--svg-controller.is-r-button-active .r-button,
+.virtual-controller--svg-controller.is-left-joystick-active .left-joystick,
+.virtual-controller--svg-controller.is-right-joystick-active .right-joystick,
+.virtual-controller--svg-controller.is-d-pad-up-active .d-pad-up,
+.virtual-controller--svg-controller.is-d-pad-down-active .d-pad-down,
+.virtual-controller--svg-controller.is-d-pad-left-active .d-pad-left,
+.virtual-controller--svg-controller.is-d-pad-right-active .d-pad-right {
+  filter: drop-shadow(0 0 0.55px rgba(121, 216, 255, 0.9))
+    drop-shadow(0 0 1.7px rgba(65, 185, 234, 0.72));
+}
+
+.virtual-controller--svg-controller.is-a-button-active .a-button[id$="-bg"],
+.virtual-controller--svg-controller.is-b-button-active .b-button[id$="-bg"],
+.virtual-controller--svg-controller.is-x-button-active .x-button[id$="-bg"],
+.virtual-controller--svg-controller.is-y-button-active .y-button[id$="-bg"],
+.virtual-controller--svg-controller.is-minus-button-active .minus-button[id$="-bg"],
+.virtual-controller--svg-controller.is-plus-button-active .plus-button[id$="-bg"],
+.virtual-controller--svg-controller.is-capture-button-active .capture-button[id$="-bg"],
+.virtual-controller--svg-controller.is-home-button-active .home-button[id$="-bg"],
+.virtual-controller--svg-controller.is-l-button-active .l-button[id$="-bg"],
+.virtual-controller--svg-controller.is-r-button-active .r-button[id$="-bg"],
+.virtual-controller--svg-controller.is-left-joystick-active .left-joystick[id$="-bg"],
+.virtual-controller--svg-controller.is-right-joystick-active .right-joystick[id$="-bg"],
+.virtual-controller--svg-controller.is-d-pad-up-active .d-pad[id$="-bg"],
+.virtual-controller--svg-controller.is-d-pad-down-active .d-pad[id$="-bg"],
+.virtual-controller--svg-controller.is-d-pad-left-active .d-pad[id$="-bg"],
+.virtual-controller--svg-controller.is-d-pad-right-active .d-pad[id$="-bg"] {
+  fill: #79d8ff;
+}
+
+.virtual-controller--svg-controller.is-a-button-active .a-button[id$="-outer"],
+.virtual-controller--svg-controller.is-b-button-active .b-button[id$="-outer"],
+.virtual-controller--svg-controller.is-x-button-active .x-button[id$="-outer"],
+.virtual-controller--svg-controller.is-y-button-active .y-button[id$="-outer"],
+.virtual-controller--svg-controller.is-minus-button-active .minus-button[id$="-outer"],
+.virtual-controller--svg-controller.is-plus-button-active .plus-button[id$="-outer"],
+.virtual-controller--svg-controller.is-capture-button-active .capture-button[id$="-outer"],
+.virtual-controller--svg-controller.is-home-button-active .home-button[id$="-outer"],
+.virtual-controller--svg-controller.is-l-button-active .l-button[id$="-outer"],
+.virtual-controller--svg-controller.is-r-button-active .r-button[id$="-outer"],
+.virtual-controller--svg-controller.is-left-joystick-active .left-joystick[id$="-outer"],
+.virtual-controller--svg-controller.is-right-joystick-active .right-joystick[id$="-outer"],
+.virtual-controller--svg-controller.is-d-pad-up-active .d-pad[id$="-outer"],
+.virtual-controller--svg-controller.is-d-pad-down-active .d-pad[id$="-outer"],
+.virtual-controller--svg-controller.is-d-pad-left-active .d-pad[id$="-outer"],
+.virtual-controller--svg-controller.is-d-pad-right-active .d-pad[id$="-outer"] {
+  stroke: #dff7ff;
+}
+
+.virtual-controller--svg-controller.is-a-button-active .a-button[id$="-inner"],
+.virtual-controller--svg-controller.is-b-button-active .b-button[id$="-inner"],
+.virtual-controller--svg-controller.is-x-button-active .x-button[id$="-inner"],
+.virtual-controller--svg-controller.is-y-button-active .y-button[id$="-inner"],
+.virtual-controller--svg-controller.is-minus-button-active .minus-button[id$="-inner"],
+.virtual-controller--svg-controller.is-plus-button-active .plus-button[id$="-inner"],
+.virtual-controller--svg-controller.is-capture-button-active .capture-button[id$="-inner"],
+.virtual-controller--svg-controller.is-home-button-active .home-button[id$="-inner"],
+.virtual-controller--svg-controller.is-d-pad-up-active .d-pad-up,
+.virtual-controller--svg-controller.is-d-pad-down-active .d-pad-down,
+.virtual-controller--svg-controller.is-d-pad-left-active .d-pad-left,
+.virtual-controller--svg-controller.is-d-pad-right-active .d-pad-right {
+  fill: #03111f;
+}
+
 .virtual-keyboard-scroll {
-  overflow-x: auto;
-  padding-bottom: 0.25rem;
+  --keyboard-key-unit: clamp(25px, 3.9vw, 34px);
+  overflow: visible;
+  padding-bottom: 0.15rem;
 }
 
 .virtual-keyboard-shell {
-  width: max-content;
-  min-width: min(100%, 940px);
+  width: 100%;
+  min-width: 0;
   margin-inline: auto;
-  padding: 0.7rem;
+  padding: 0.42rem;
   border: 1px solid rgba(226, 232, 240, 0.7);
-  border-radius: 26px;
+  border-radius: 18px;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(203, 213, 225, 0.55));
   box-shadow:
     0 18px 42px rgba(0, 0, 0, 0.18),
@@ -558,9 +828,9 @@ select {
 
 .virtual-keyboard {
   display: grid;
-  gap: 0.38rem;
-  padding: 0.7rem;
-  border-radius: 20px;
+  gap: 0.26rem;
+  padding: 0.42rem;
+  border-radius: 14px;
   background: rgba(248, 250, 252, 0.74);
   box-shadow: inset 0 0 24px rgba(255, 255, 255, 0.76);
 }
@@ -568,7 +838,7 @@ select {
 .virtual-keyboard__row {
   display: flex;
   align-items: stretch;
-  gap: 0.34rem;
+  gap: 0.22rem;
 }
 
 .virtual-keyboard__spacer {
@@ -578,8 +848,8 @@ select {
 .virtual-key {
   display: grid;
   place-items: center;
-  min-width: 34px;
-  min-height: 38px;
+  min-width: 0;
+  min-height: 30px;
   border: 1px solid rgba(148, 163, 184, 0.4);
   border-radius: 9px;
   padding: 0.22rem 0.28rem;
@@ -592,7 +862,7 @@ select {
 }
 
 .virtual-key__label {
-  font-size: 0.76rem;
+  font-size: clamp(0.58rem, 0.82vw, 0.72rem);
   font-weight: 750;
   line-height: 1;
   text-align: center;
@@ -601,7 +871,7 @@ select {
 .virtual-key__mapping {
   margin-top: 0.12rem;
   color: #2563eb;
-  font-size: 0.58rem;
+  font-size: clamp(0.44rem, 0.68vw, 0.54rem);
   line-height: 1;
   text-align: center;
 }
@@ -644,12 +914,22 @@ select {
   color: var(--muted);
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1500px) {
   .app-shell {
     padding: 1rem;
   }
 
   .layout-grid {
+    grid-template-columns: minmax(300px, 380px) minmax(680px, 1fr);
+  }
+}
+
+@media (max-width: 1100px) {
+  .layout-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .serial-connect-row {
     grid-template-columns: 1fr;
   }
 
@@ -657,8 +937,7 @@ select {
     font-size: 2.25rem;
   }
 
-  .virtual-controller--joycon.virtual-controller--single-horizontal,
-  .virtual-controller--pro-controller {
-    min-width: 620px;
+  .virtual-controller--joycon.virtual-controller--single-horizontal {
+    min-width: 0;
   }
 }

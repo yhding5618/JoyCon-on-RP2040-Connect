@@ -1,6 +1,6 @@
 import {
   defaultInputSnapshot,
-  defaultLeftJoyConProfile,
+  defaultProControllerProfile,
   defaultProfileForControllerModel,
 } from "./defaults";
 import { invokeTauri } from "./tauri";
@@ -25,7 +25,7 @@ const mockStatus = {
   lastGapStatus: 0,
   lastGapReason: 0,
   bondDeviceCount: 0,
-  controllerMode: 0,
+  controllerMode: 2,
   bluetoothEnabled: 0,
   reserved0: 0,
   reserved1: 0,
@@ -113,6 +113,10 @@ const proControllerButtonBits: Record<string, number> = {
   b: rightJoyConButtonBits.b,
   x: rightJoyConButtonBits.x,
   y: rightJoyConButtonBits.y,
+  down: leftJoyConButtonBits.down,
+  up: leftJoyConButtonBits.up,
+  right: leftJoyConButtonBits.right,
+  left: leftJoyConButtonBits.left,
   l: leftJoyConButtonBits.l,
   r: rightJoyConButtonBits.r,
   zl: leftJoyConButtonBits.zl,
@@ -134,8 +138,8 @@ let browserState: AppStateSnapshot = {
     lastStatus: null,
   },
   profile: {
-    activeProfileId: defaultLeftJoyConProfile.id,
-    activeProfile: defaultLeftJoyConProfile,
+    activeProfileId: defaultProControllerProfile.id,
+    activeProfile: defaultProControllerProfile,
   },
   input: {
     ...defaultInputSnapshot,
@@ -156,6 +160,7 @@ let browserState: AppStateSnapshot = {
     rxCount: 0,
     inputRateHz: 0,
     outputRateHz: 0,
+    commandLog: [],
     recentLogs: ["Browser fallback active. Tauri commands are stubbed."],
     lastSerialError: null,
     lastStatus: null,
@@ -167,6 +172,28 @@ let browserState: AppStateSnapshot = {
 
 export function getAppStateSnapshot(): Promise<AppStateSnapshot> {
   return invokeTauri("get_app_state_snapshot", undefined, () => browserState);
+}
+
+export function clearCommandLogCommand(): Promise<AppStateSnapshot> {
+  return invokeTauri(
+    "clear_command_log",
+    undefined,
+    () => {
+      browserState = {
+        ...browserState,
+        diagnostics: {
+          ...browserState.diagnostics,
+          commandLog: [],
+          recentLogs: [
+            "Command log cleared",
+            ...browserState.diagnostics.recentLogs,
+          ].slice(0, 8),
+        },
+      };
+
+      return browserState;
+    },
+  );
 }
 
 export function setCaptureEnabledCommand(
@@ -306,12 +333,14 @@ export function getStatusCommand(): Promise<AppStateSnapshot> {
             sequence: 1,
             payloadLen: 0,
             crc16: 0xaf25,
+            details: "request status",
           },
           lastFrameRx: {
             messageType: 0x03,
             sequence: 1,
             payloadLen: 20,
             crc16: 0,
+            details: "mode=Left Joy-Con bluetooth=off battery=8 bonds=0",
           },
           recentLogs: ["Status refreshed", ...browserState.diagnostics.recentLogs].slice(0, 8),
         },
@@ -540,6 +569,7 @@ export function tapControllerButtonCommand(
             sequence: 1,
             payloadLen: 16,
             crc16: 0,
+            details: `buttons=0x${(bits[button] ?? 0).toString(16)} test tap`,
           },
           recentLogs: [
             `Test tap ${button} sent buttons=0x${(bits[button] ?? 0).toString(16)}`,
@@ -594,6 +624,7 @@ export function pushInputSnapshot(
         if (pressed.has("KeyQ")) buttons |= rightJoyConButtonBits.plus;
         if (pressed.has("ShiftRight")) buttons |= rightJoyConButtonBits.stick;
         if (pressed.has("KeyO")) buttons |= rightJoyConButtonBits.home;
+        if (pressed.has("Home")) buttons |= rightJoyConButtonBits.home;
       } else if (browserState.profile.activeProfile.controllerModel === "ProController") {
         if (pressed.has("KeyA")) lx -= stickExtent;
         if (pressed.has("KeyD")) lx += stickExtent;
@@ -603,14 +634,21 @@ export function pushInputSnapshot(
         if (pressed.has("KeyI")) buttons |= rightJoyConButtonBits.x;
         if (pressed.has("KeyK")) buttons |= rightJoyConButtonBits.b;
         if (pressed.has("KeyL")) buttons |= rightJoyConButtonBits.a;
-        if (pressed.has("KeyE")) buttons |= leftJoyConButtonBits.l;
-        if (pressed.has("KeyU")) buttons |= rightJoyConButtonBits.r;
-        if (pressed.has("KeyQ")) buttons |= leftJoyConButtonBits.minus;
-        if (pressed.has("Enter")) buttons |= rightJoyConButtonBits.plus;
+        if (pressed.has("ArrowDown")) buttons |= leftJoyConButtonBits.down;
+        if (pressed.has("ArrowUp")) buttons |= leftJoyConButtonBits.up;
+        if (pressed.has("ArrowRight")) buttons |= leftJoyConButtonBits.right;
+        if (pressed.has("ArrowLeft")) buttons |= leftJoyConButtonBits.left;
+        if (pressed.has("KeyE")) buttons |= leftJoyConButtonBits.minus;
+        if (pressed.has("KeyU")) buttons |= rightJoyConButtonBits.plus;
+        if (pressed.has("Digit3")) buttons |= leftJoyConButtonBits.l;
+        if (pressed.has("Digit2")) buttons |= leftJoyConButtonBits.zl;
+        if (pressed.has("Digit8")) buttons |= rightJoyConButtonBits.r;
+        if (pressed.has("Digit9")) buttons |= rightJoyConButtonBits.zr;
         if (pressed.has("ShiftLeft") || pressed.has("ShiftRight")) {
           buttons |= leftJoyConButtonBits.stick;
         }
-        if (pressed.has("KeyO")) buttons |= leftJoyConButtonBits.capture;
+        if (pressed.has("F9")) buttons |= leftJoyConButtonBits.capture;
+        if (pressed.has("F10")) buttons |= rightJoyConButtonBits.home;
       } else {
         if (pressed.has("KeyS")) lx -= stickExtent;
         if (pressed.has("KeyW")) lx += stickExtent;

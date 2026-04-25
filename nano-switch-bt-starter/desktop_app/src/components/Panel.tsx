@@ -2,18 +2,19 @@ import type { ReactNode } from "react";
 
 type PanelProps = {
   title: string;
-  copy: string;
+  copy?: string;
+  className?: string;
   actions?: ReactNode;
   children: ReactNode;
 };
 
-export function Panel({ title, copy, actions, children }: PanelProps) {
+export function Panel({ title, copy, className, actions, children }: PanelProps) {
   return (
-    <section className="panel">
+    <section className={className ? `panel ${className}` : "panel"}>
       <header className="panel-header">
         <div>
           <h2 className="panel-title">{title}</h2>
-          <p className="panel-copy">{copy}</p>
+          {copy ? <p className="panel-copy">{copy}</p> : null}
         </div>
         {actions}
       </header>

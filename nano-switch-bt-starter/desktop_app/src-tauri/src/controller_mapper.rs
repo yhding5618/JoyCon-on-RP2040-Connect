@@ -65,6 +65,10 @@ fn apply_action(
         LogicalAction::MoveUp => *stick_y += KEYBOARD_STICK_EXTENT,
         LogicalAction::MoveRight => *stick_x += KEYBOARD_STICK_EXTENT,
         LogicalAction::MoveLeft => *stick_x -= KEYBOARD_STICK_EXTENT,
+        LogicalAction::DpadDown => state.buttons |= BTN_LJC_DOWN,
+        LogicalAction::DpadUp => state.buttons |= BTN_LJC_UP,
+        LogicalAction::DpadRight => state.buttons |= BTN_LJC_RIGHT,
+        LogicalAction::DpadLeft => state.buttons |= BTN_LJC_LEFT,
         LogicalAction::A => {
             state.buttons |= match controller_model {
                 ControllerModel::RightJoyCon | ControllerModel::ProController => BTN_RJC_A,
