@@ -123,7 +123,7 @@ It also selects per-mode Bluedroid bond paths:
 - `bt_rjc`
 - `bt_pro`
 
-`esp_bt_config_file_path_update()` is only available in newer ESP-IDF releases. On the original stock `v4.4.x` toolchain, the firmware logs a warning and still builds, but Bluedroid's internal bond store remains shared unless that API is backported or the project is built on an ESP-IDF version that provides it.
+`esp_bt_config_file_path_update()` is only available in newer ESP-IDF releases. On the original stock `v4.4.x` toolchain, the firmware logs an error-level diagnostic and still builds, but Bluedroid's internal bond store remains shared unless that API is backported or the project is built on an ESP-IDF version that provides it.
 
 ## Recommended Next Milestones
 

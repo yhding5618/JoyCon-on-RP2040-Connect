@@ -1,5 +1,6 @@
 #include "switch_hid.h"
 
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -94,11 +95,14 @@
 #define SWITCH_HAS_BT_CONFIG_FILE_PATH_UPDATE 0
 #endif
 
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
 #define SWITCH_HAS_IFACE_MAC_ADDR_SET 1
 #else
 #define SWITCH_HAS_IFACE_MAC_ADDR_SET 0
 #endif
+
+#define BDSTR "%02X:%02X:%02X:%02X:%02X:%02X"
+#define BDARG(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
 
 #if defined(__GNUC__)
 #define SWITCH_HID_MAYBE_UNUSED __attribute__((unused))
@@ -497,6 +501,45 @@ static bool bd_addr_is_zero(const uint8_t bd_addr[SWITCH_BD_ADDR_LEN]) {
   return true;
 }
 
+static void debug_dump_pair_slot(const char *stage,
+                                 switch_controller_profile_t mode,
+                                 const nina_mode_cfg_t *cfg,
+                                 const nina_pair_slot_t *slot) {
+  const char *stage_name = stage != NULL ? stage : "unknown";
+
+  if (cfg == NULL || slot == NULL) {
+    ESP_LOGE(TAG,
+             "[%s] pair slot dump unavailable cfg=%p slot=%p",
+             stage_name,
+             (void *)cfg,
+             (void *)slot);
+    return;
+  }
+
+  ESP_LOGI(TAG, "[%s] mode=%u", stage_name, (unsigned int)mode);
+  ESP_LOGI(TAG,
+           "[%s] app_ns=%s bond_path=%s",
+           stage_name,
+           cfg->app_nvs_ns,
+           cfg->bt_bond_path);
+  ESP_LOGI(TAG,
+           "[%s] slot.magic=0x%08" PRIX32 " version=%u slot.mode=%u",
+           stage_name,
+           slot->magic,
+           slot->version,
+           slot->mode);
+  ESP_LOGI(TAG,
+           "[%s] has_local_mac=%u local_bt_mac=" BDSTR,
+           stage_name,
+           slot->has_local_mac,
+           BDARG(slot->local_bt_mac));
+  ESP_LOGI(TAG,
+           "[%s] has_host_addr=%u switch_bd_addr=" BDSTR,
+           stage_name,
+           slot->has_host_addr,
+           BDARG(slot->switch_bd_addr));
+}
+
 static const nina_mode_cfg_t *nina_mode_cfg_for_profile(switch_controller_profile_t profile) {
   if ((uint8_t)profile >= NINA_MODE_COUNT) {
     return NULL;
@@ -821,7 +864,7 @@ static esp_err_t clear_saved_switch_host_from_nvs(const char *source) {
   return err;
 }
 
-static esp_err_t save_local_bdaddr_to_nvs(const char *source) {
+static esp_err_t verify_local_bdaddr_matches_slot(const char *source) {
   const uint8_t *address = esp_bt_dev_get_address();
   esp_err_t err = ESP_OK;
 
@@ -829,9 +872,18 @@ static esp_err_t save_local_bdaddr_to_nvs(const char *source) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  s_active_pair_slot.has_local_mac = 1u;
-  memcpy(s_active_pair_slot.local_bt_mac, address, sizeof(s_active_pair_slot.local_bt_mac));
-  err = nina_pair_slot_save(s_controller_profile, &s_active_pair_slot);
+  if (s_active_pair_slot.has_local_mac == 0u ||
+      bd_addr_is_zero(s_active_pair_slot.local_bt_mac)) {
+    ESP_LOGE(TAG,
+             "[NINA_BT] cannot verify local BT address from %s because active slot has no "
+             "mode-specific MAC",
+             source != NULL ? source : "unknown");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (memcmp(address, s_active_pair_slot.local_bt_mac, SWITCH_BD_ADDR_LEN) != 0) {
+    err = ESP_ERR_INVALID_STATE;
+  }
 
   record_event(SB_EVENT_SOURCE_HID_API,
                SWITCH_HID_API_EVENT_SAVE_LOCAL_ADDR,
@@ -839,14 +891,16 @@ static esp_err_t save_local_bdaddr_to_nvs(const char *source) {
                0u);
   if (err == ESP_OK) {
     ESP_LOGI(TAG,
-             "saved local BT address from %s: %02X:%02X:%02X:%02X:%02X:%02X",
+             "verified local BT address from %s: " BDSTR,
              source != NULL ? source : "unknown",
-             address[0],
-             address[1],
-             address[2],
-             address[3],
-             address[4],
-             address[5]);
+             BDARG(address));
+  } else {
+    ESP_LOGE(TAG,
+             "[NINA_BT] local BT address mismatch from %s: actual=" BDSTR
+             " expected_slot=" BDSTR,
+             source != NULL ? source : "unknown",
+             BDARG(address),
+             BDARG(s_active_pair_slot.local_bt_mac));
   }
   return err;
 }
@@ -1059,6 +1113,82 @@ static void log_bt_identity(const char *stage) {
            kSwitchJoyConApp.provider,
            (unsigned int)kSwitchJoyConApp.subclass,
            (unsigned int)descriptor_len);
+}
+
+static esp_err_t debug_dump_actual_bt_addr(const char *stage,
+                                           const uint8_t expected[SWITCH_BD_ADDR_LEN]) {
+  const char *stage_name = stage != NULL ? stage : "unknown";
+  const uint8_t *actual = esp_bt_dev_get_address();
+  uint8_t expected_copy[SWITCH_BD_ADDR_LEN] = {0};
+
+  if (actual == NULL || bd_addr_is_zero(actual)) {
+    ESP_LOGE(TAG, "[%s] actual BT address unavailable", stage_name);
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (expected != NULL) {
+    memcpy(expected_copy, expected, sizeof(expected_copy));
+  }
+
+  ESP_LOGI(TAG,
+           "[%s] actual_bt_addr=" BDSTR " expected_local_bt_mac=" BDSTR,
+           stage_name,
+           BDARG(actual),
+           BDARG(expected_copy));
+
+  if (expected == NULL || bd_addr_is_zero(expected_copy) ||
+      memcmp(actual, expected_copy, SWITCH_BD_ADDR_LEN) != 0) {
+    ESP_LOGE(TAG,
+             "[%s] BT MAC mismatch: per-mode Bluetooth identity is NOT active",
+             stage_name);
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  return ESP_OK;
+}
+
+static void debug_dump_bond_list(const char *stage) {
+  const char *stage_name = stage != NULL ? stage : "unknown";
+  esp_bd_addr_t devices[SWITCH_MAX_BOND_DEVICES];
+  int device_count = 0;
+  esp_err_t err = ESP_OK;
+
+  if (!s_bluetooth_enabled || esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+    ESP_LOGW(TAG, "[%s] bond list unavailable because Bluedroid is not enabled", stage_name);
+    return;
+  }
+
+  device_count = esp_bt_gap_get_bond_device_num();
+  ESP_LOGI(TAG, "[%s] bond_count=%d", stage_name, device_count);
+
+  if (device_count <= 0) {
+    return;
+  }
+
+  if (device_count > SWITCH_MAX_BOND_DEVICES) {
+    ESP_LOGW(TAG,
+             "[%s] bond_count=%d exceeds dump cap=%d",
+             stage_name,
+             device_count,
+             SWITCH_MAX_BOND_DEVICES);
+    device_count = SWITCH_MAX_BOND_DEVICES;
+  }
+
+  memset(devices, 0, sizeof(devices));
+  err = esp_bt_gap_get_bond_device_list(&device_count, devices);
+  ESP_LOGI(TAG,
+           "[%s] esp_bt_gap_get_bond_device_list -> %s actual_count=%d",
+           stage_name,
+           esp_err_to_name(err),
+           device_count);
+
+  if (err != ESP_OK) {
+    return;
+  }
+
+  for (int i = 0; i < device_count; ++i) {
+    ESP_LOGI(TAG, "[%s] bond[%d]=" BDSTR, stage_name, i, BDARG(devices[i]));
+  }
 }
 
 static void delayed_bt_identity_log_task(void *arg) {
@@ -1289,24 +1419,32 @@ static void nina_identity_derive_mode_mac(const uint8_t base_mac[SWITCH_BD_ADDR_
 static esp_err_t nina_identity_get_or_create_local_mac(switch_controller_profile_t mode,
                                                        uint8_t out_mac[SWITCH_BD_ADDR_LEN]) {
   uint8_t efuse_mac[6] = {0};
+  uint8_t expected_mac[SWITCH_BD_ADDR_LEN] = {0};
   esp_err_t err = ESP_OK;
 
   if (out_mac == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  if (mode == s_controller_profile &&
-      s_active_pair_slot.has_local_mac != 0u &&
-      !bd_addr_is_zero(s_active_pair_slot.local_bt_mac)) {
-    memcpy(out_mac, s_active_pair_slot.local_bt_mac, SWITCH_BD_ADDR_LEN);
-    return ESP_OK;
-  }
-
   err = esp_efuse_mac_get_default(efuse_mac);
   if (err != ESP_OK) {
     return err;
   }
-  nina_identity_derive_mode_mac(efuse_mac, mode, out_mac);
+
+  nina_identity_derive_mode_mac(efuse_mac, mode, expected_mac);
+  if (mode == s_controller_profile &&
+      s_active_pair_slot.has_local_mac != 0u &&
+      !bd_addr_is_zero(s_active_pair_slot.local_bt_mac) &&
+      memcmp(s_active_pair_slot.local_bt_mac, expected_mac, SWITCH_BD_ADDR_LEN) != 0) {
+    ESP_LOGW(TAG,
+             "[NINA_BT] replacing stale local BT MAC for mode=%u stored=" BDSTR
+             " expected=" BDSTR,
+             (unsigned int)mode,
+             BDARG(s_active_pair_slot.local_bt_mac),
+             BDARG(expected_mac));
+  }
+
+  memcpy(out_mac, expected_mac, SWITCH_BD_ADDR_LEN);
   return ESP_OK;
 }
 
@@ -1335,19 +1473,53 @@ static void subtract_from_mac_last_octets(uint8_t mac[SWITCH_BD_ADDR_LEN], uint8
 
 static esp_err_t set_local_bt_mac_before_controller_init(
     const uint8_t bt_mac[SWITCH_BD_ADDR_LEN]) {
+  uint8_t readback[SWITCH_BD_ADDR_LEN] = {0};
+  esp_err_t err = ESP_OK;
+
   if (bd_addr_is_zero(bt_mac)) {
     return ESP_ERR_INVALID_ARG;
   }
 
 #if SWITCH_HAS_IFACE_MAC_ADDR_SET
-  return esp_iface_mac_addr_set(bt_mac, ESP_MAC_BT);
+  err = esp_iface_mac_addr_set(bt_mac, ESP_MAC_BT);
+  ESP_LOGI(TAG,
+           "[NINA_BT] esp_iface_mac_addr_set(" BDSTR ") -> %s",
+           BDARG(bt_mac),
+           esp_err_to_name(err));
 #else
   uint8_t base_mac[SWITCH_BD_ADDR_LEN];
   memcpy(base_mac, bt_mac, sizeof(base_mac));
   subtract_from_mac_last_octets(base_mac, bt_mac_base_offset_for_idf_config());
   base_mac[0] = (uint8_t)((base_mac[0] | 0x02u) & 0xFEu);
-  return esp_base_mac_addr_set(base_mac);
+  err = esp_base_mac_addr_set(base_mac);
+  ESP_LOGI(TAG,
+           "[NINA_BT] esp_base_mac_addr_set(base=" BDSTR " for target BT=" BDSTR
+           ") -> %s",
+           BDARG(base_mac),
+           BDARG(bt_mac),
+           esp_err_to_name(err));
 #endif
+
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  err = esp_read_mac(readback, ESP_MAC_BT);
+  ESP_LOGI(TAG,
+           "[NINA_BT] esp_read_mac(ESP_MAC_BT) -> %s readback=" BDSTR
+           " expected=" BDSTR,
+           esp_err_to_name(err),
+           BDARG(readback),
+           BDARG(bt_mac));
+  if (err != ESP_OK) {
+    return err;
+  }
+  if (memcmp(readback, bt_mac, SWITCH_BD_ADDR_LEN) != 0) {
+    ESP_LOGE(TAG, "[NINA_BT] pre-init BT MAC readback mismatch");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  return ESP_OK;
 }
 
 static esp_err_t configure_mode_local_bt_mac(void) {
@@ -1389,9 +1561,15 @@ static esp_err_t configure_bluedroid_bond_path(const nina_mode_cfg_t *cfg) {
   }
 
 #if SWITCH_HAS_BT_CONFIG_FILE_PATH_UPDATE
-  return esp_bt_config_file_path_update(cfg->bt_bond_path);
+  esp_err_t err = ESP_OK;
+  err = esp_bt_config_file_path_update(cfg->bt_bond_path);
+  ESP_LOGI(TAG,
+           "[NINA_BT] esp_bt_config_file_path_update(%s) -> %s",
+           cfg->bt_bond_path,
+           esp_err_to_name(err));
+  return err;
 #else
-  ESP_LOGW(TAG,
+  ESP_LOGE(TAG,
            "[NINA_BT] ESP-IDF %s lacks esp_bt_config_file_path_update(); "
            "bond namespace remains shared unless this API is backported",
            IDF_VER);
@@ -1401,11 +1579,16 @@ static esp_err_t configure_bluedroid_bond_path(const nina_mode_cfg_t *cfg) {
 
 static void copy_bt_address_be(uint8_t out[6]) {
   const uint8_t *address = esp_bt_dev_get_address();
-  if (address == NULL) {
+  if (s_active_pair_slot.has_local_mac != 0u &&
+      !bd_addr_is_zero(s_active_pair_slot.local_bt_mac)) {
+    memcpy(out, s_active_pair_slot.local_bt_mac, SWITCH_BD_ADDR_LEN);
+    return;
+  }
+  if (bd_addr_is_zero(address)) {
     memcpy(out, kFallbackAddressBE, sizeof(kFallbackAddressBE));
     return;
   }
-  memcpy(out, address, 6u);
+  memcpy(out, address, SWITCH_BD_ADDR_LEN);
 }
 
 static void copy_bt_address_le(uint8_t out[6]) {
@@ -2053,6 +2236,12 @@ static void build_device_info_reply(uint8_t reply[SWITCH_DEVICE_INFO_REPLY_BYTES
   memcpy(&reply[4], address_be, sizeof(address_be));
   reply[10] = 0x01u;
   reply[11] = 0x01u;
+
+  ESP_LOGI(TAG,
+           "DEVICE_INFO profile=%u controller_type=0x%02X reported_mac=" BDSTR,
+           (unsigned int)switch_controller_mode(),
+           (unsigned int)reply[2],
+           BDARG(address_be));
 }
 
 static void reply_spi_flash_read(const uint8_t *args, size_t args_len) {
@@ -2395,7 +2584,7 @@ static void hid_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) 
           }
         }
 
-        (void)save_local_bdaddr_to_nvs("register_app");
+        (void)verify_local_bdaddr_matches_slot("register_app");
         log_reconnect_state(
             "register_app", param->register_app.in_use, param->register_app.bd_addr);
         configure_gap_identity();
@@ -2629,6 +2818,7 @@ static esp_err_t start_bluetooth(void) {
   ESP_LOGI(TAG, "[NINA_BT] selected mode: %s", cfg->device_name);
   ESP_LOGI(TAG, "[NINA_BT] app namespace: %s", cfg->app_nvs_ns);
   ESP_LOGI(TAG, "[NINA_BT] bond path: %s", cfg->bt_bond_path);
+  debug_dump_pair_slot("after_slot_load", s_controller_profile, cfg, &s_active_pair_slot);
 
   err = configure_mode_local_bt_mac();
   if (err != ESP_OK) {
@@ -2637,6 +2827,7 @@ static esp_err_t start_bluetooth(void) {
     sync_mode_status();
     return err;
   }
+  debug_dump_pair_slot("before_bt_init", s_controller_profile, cfg, &s_active_pair_slot);
 
   err = configure_bluedroid_bond_path(cfg);
   if (err != ESP_OK) {
@@ -2686,7 +2877,14 @@ static esp_err_t start_bluetooth(void) {
     return err;
   }
   log_bt_identity("after_bluedroid_enable");
-  (void)save_local_bdaddr_to_nvs("bluedroid_enable");
+  err = debug_dump_actual_bt_addr("after_bluedroid_enable", s_active_pair_slot.local_bt_mac);
+  if (err != ESP_OK) {
+    (void)stop_bluetooth();
+    s_status.last_error = (uint8_t)err;
+    return err;
+  }
+  (void)verify_local_bdaddr_matches_slot("bluedroid_enable");
+  debug_dump_bond_list("after_bluedroid_enable");
 
   err = esp_bt_gap_register_callback(gap_callback);
   if (err != ESP_OK) {
@@ -2779,13 +2977,30 @@ esp_err_t switch_hid_set_controller_mode(sb_controller_mode_t mode) {
     return ESP_ERR_INVALID_ARG;
   }
 
+  if (profile == s_controller_profile) {
+    esp_err_t save_err = save_controller_mode_to_nvs(mode);
+    if (save_err != ESP_OK) {
+      s_status.last_error = (uint8_t)save_err;
+      return save_err;
+    }
+    sync_mode_status();
+    return ESP_OK;
+  }
+
   if (s_bluetooth_enabled) {
-    s_status.last_error = (uint8_t)ESP_ERR_INVALID_STATE;
+    esp_err_t save_err = save_controller_mode_to_nvs(mode);
+    if (save_err != ESP_OK) {
+      s_status.last_error = (uint8_t)save_err;
+      return save_err;
+    }
     ESP_LOGW(TAG,
-             "controller profile change rejected while Bluetooth is enabled: requested=%u active=%u",
+             "controller profile change requested while Bluetooth is enabled: requested=%u "
+             "active=%u; restarting to apply BT MAC, bond path, SDP, and protocol identity",
              (unsigned int)mode,
              (unsigned int)switch_controller_mode());
-    return ESP_ERR_INVALID_STATE;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
+    return ESP_OK;
   }
 
   s_controller_profile = profile;
