@@ -8,7 +8,6 @@
 
 static constexpr uint32_t kUsbBaud = 115200;
 static constexpr uint32_t kNinaBaud = 921600;
-static constexpr uint32_t kHelloPeriodMs = 1500;
 static constexpr uint32_t kUsbStartupDelayMs = 400;
 static constexpr uint32_t kNinaResetLowMs = 50;
 static constexpr uint32_t kNinaBootDelayMs = 300;
@@ -101,7 +100,6 @@ class FrameDecoder {
 static FrameDecoder g_usb_decoder;
 static FrameDecoder g_nina_decoder;
 static uint8_t g_sequence_to_nina = 0;
-static uint32_t g_last_hello_ms = 0;
 
 static size_t WriteFrame(Print &destination, const sb_frame_t &frame) {
   return destination.write(reinterpret_cast<const uint8_t *>(&frame),
@@ -161,16 +159,9 @@ void setup() {
   NINA_SERIAL.begin(kNinaBaud);
 
   SendHelloToNina();
-  g_last_hello_ms = millis();
 }
 
 void loop() {
   PumpFrames(Serial, NINA_SERIAL, g_usb_decoder, true);
   PumpFrames(NINA_SERIAL, Serial, g_nina_decoder, false);
-
-  const uint32_t now = millis();
-  if ((now - g_last_hello_ms) >= kHelloPeriodMs) {
-    SendHelloToNina();
-    g_last_hello_ms = now;
-  }
 }
