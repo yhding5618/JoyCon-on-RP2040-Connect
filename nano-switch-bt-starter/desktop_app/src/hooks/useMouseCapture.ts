@@ -11,11 +11,24 @@ type MouseCapture = {
   resetMouseDelta: () => void;
 };
 
-export function useMouseCapture(enabled: boolean): MouseCapture {
+export function useMouseCapture(
+  enabled: boolean,
+  movementEnabled: boolean,
+): MouseCapture {
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const [pointerLocked, setPointerLocked] = useState(false);
   const [mouseDeltaX, setMouseDeltaX] = useState(0);
   const [mouseDeltaY, setMouseDeltaY] = useState(0);
+  const movementEnabledRef = useRef(movementEnabled);
+
+  useEffect(() => {
+    movementEnabledRef.current = movementEnabled;
+
+    if (!movementEnabled) {
+      setMouseDeltaX(0);
+      setMouseDeltaY(0);
+    }
+  }, [movementEnabled]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {
@@ -33,12 +46,24 @@ export function useMouseCapture(enabled: boolean): MouseCapture {
         return;
       }
 
+      if (!movementEnabledRef.current) {
+        return;
+      }
+
       setMouseDeltaX((value) => value + event.movementX);
       setMouseDeltaY((value) => value + event.movementY);
     };
 
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "AltLeft") {
+        setMouseDeltaX(0);
+        setMouseDeltaY(0);
+      }
+    };
+
     document.addEventListener("pointerlockchange", handlePointerLockChange);
     document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("keyup", handleKeyUp);
 
     return () => {
       document.removeEventListener(
@@ -46,6 +71,7 @@ export function useMouseCapture(enabled: boolean): MouseCapture {
         handlePointerLockChange,
       );
       document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("keyup", handleKeyUp);
     };
   }, [enabled]);
 

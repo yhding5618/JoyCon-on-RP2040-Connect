@@ -101,7 +101,7 @@ pub fn default_pro_controller_profile() -> Profile {
         controller_model: ControllerModel::ProController,
         bindings,
         mouse: MouseSettings {
-            enabled: false,
+            enabled: true,
             sensitivity_x: 1.0,
             sensitivity_y: 1.0,
             invert_y: false,

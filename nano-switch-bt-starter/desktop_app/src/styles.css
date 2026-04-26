@@ -894,6 +894,14 @@ select {
   border-color: rgba(34, 197, 94, 0.5);
 }
 
+.virtual-key.is-mouse-modifier {
+  border-color: rgba(20, 184, 166, 0.58);
+}
+
+.virtual-key.is-mouse-modifier .virtual-key__mapping {
+  color: #0f766e;
+}
+
 .controller-stage__snapshot {
   display: flex;
   flex-wrap: wrap;

@@ -102,7 +102,7 @@ export const defaultProControllerProfile: Profile = {
     ShiftLeft: "Stick",
   },
   mouse: {
-    enabled: false,
+    enabled: true,
     sensitivityX: 1,
     sensitivityY: 1,
     invertY: false,

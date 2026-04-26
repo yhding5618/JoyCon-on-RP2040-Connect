@@ -9,6 +9,7 @@ use crate::bridge_protocol::{
 use crate::model::{ControllerModel, LatestInputState, LogicalAction, Profile};
 
 const KEYBOARD_STICK_EXTENT: i32 = 32767;
+const MOUSE_STICK_UNITS_PER_PIXEL: f32 = 1024.0;
 
 pub fn map_input_to_controller(
     input: &LatestInputState,
@@ -49,6 +50,8 @@ pub fn map_input_to_controller(
             state.ry = clamp_stick_axis(stick_y);
         }
     }
+
+    apply_mouse_to_right_stick(input, profile, &mut state);
 
     state
 }
@@ -124,4 +127,56 @@ fn apply_action(
 
 fn clamp_stick_axis(value: i32) -> i16 {
     value.clamp(-KEYBOARD_STICK_EXTENT, KEYBOARD_STICK_EXTENT) as i16
+}
+
+fn apply_mouse_to_right_stick(
+    input: &LatestInputState,
+    profile: &Profile,
+    state: &mut ControllerStatePayload,
+) {
+    if profile.controller_model == ControllerModel::LeftJoyCon
+        || !profile.mouse.enabled
+        || !input.pointer_locked
+        || !is_alt_left_held(input)
+    {
+        return;
+    }
+
+    let mouse_x = mouse_axis(
+        input.mouse_delta_x,
+        profile.mouse.sensitivity_x,
+        profile.mouse.deadzone,
+    );
+    let mouse_y_delta = if profile.mouse.invert_y {
+        input.mouse_delta_y
+    } else {
+        -input.mouse_delta_y
+    };
+    let mouse_y = mouse_axis(
+        mouse_y_delta,
+        profile.mouse.sensitivity_y,
+        profile.mouse.deadzone,
+    );
+
+    state.rx = clamp_stick_axis(state.rx as i32 + mouse_x as i32);
+    state.ry = clamp_stick_axis(state.ry as i32 + mouse_y as i32);
+}
+
+fn mouse_axis(delta: f32, sensitivity: f32, deadzone: f32) -> i16 {
+    let raw = delta * sensitivity.max(0.0) * MOUSE_STICK_UNITS_PER_PIXEL;
+    let clamped = raw.clamp(
+        -(KEYBOARD_STICK_EXTENT as f32),
+        KEYBOARD_STICK_EXTENT as f32,
+    );
+    let threshold = KEYBOARD_STICK_EXTENT as f32 * deadzone.clamp(0.0, 1.0);
+
+    if clamped.abs() < threshold {
+        0
+    } else {
+        clamped.round() as i16
+    }
+}
+
+fn is_alt_left_held(input: &LatestInputState) -> bool {
+    input.pressed_codes.iter().any(|code| code == "AltLeft")
 }

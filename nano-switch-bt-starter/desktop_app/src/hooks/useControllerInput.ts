@@ -45,7 +45,10 @@ export function useControllerInput() {
     captureEnabled,
     handleToggleCaptureHotkey,
   );
-  const mouse = useMouseCapture(captureEnabled);
+  const mouse = useMouseCapture(
+    captureEnabled,
+    keyboard.capturedPressedCodes.includes("AltLeft"),
+  );
   const resetMouseDeltaRef = useRef(mouse.resetMouseDelta);
 
   useEffect(() => {

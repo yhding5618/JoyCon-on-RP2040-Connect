@@ -51,13 +51,21 @@ export function VirtualKeyboard({
                   }
 
                   const actions = keyActionIndex.get(key.code) ?? [];
-                  const mappedLabel = actions.map(actionLabel).join(", ");
+                  const marksMouseMovement =
+                    key.code === "AltLeft" && profile.mouse.enabled;
+                  const mappedLabel = [
+                    ...actions.map(actionLabel),
+                    marksMouseMovement ? "Mouse" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(", ");
                   const active = observedPressedCodes.has(key.code);
                   const className = [
                     "virtual-key",
                     active ? "is-active" : "",
                     mappedLabel ? "is-mapped" : "",
                     key.code === "F8" ? "is-capture-toggle" : "",
+                    marksMouseMovement ? "is-mouse-modifier" : "",
                   ]
                     .filter(Boolean)
                     .join(" ");

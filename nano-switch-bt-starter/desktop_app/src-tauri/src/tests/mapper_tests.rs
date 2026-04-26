@@ -196,6 +196,24 @@ fn mapper_uses_default_pro_controller_bindings() {
 }
 
 #[test]
+fn mapper_maps_mouse_move_to_pro_right_stick() {
+    let profile = default_pro_controller_profile();
+
+    let controller = mouse_state_for(&profile, 12.0, -8.0, true, true);
+    assert_eq!((controller.lx, controller.ly), (0, 0));
+    assert_eq!((controller.rx, controller.ry), (12288, 8192));
+
+    let without_alt = mouse_state_for(&profile, 12.0, -8.0, true, false);
+    assert_eq!((without_alt.rx, without_alt.ry), (0, 0));
+
+    let right_alt = mouse_state_for_codes(&profile, 12.0, -8.0, true, &["AltRight"]);
+    assert_eq!((right_alt.rx, right_alt.ry), (0, 0));
+
+    let unlocked = mouse_state_for(&profile, 12.0, -8.0, false, true);
+    assert_eq!((unlocked.rx, unlocked.ry), (0, 0));
+}
+
+#[test]
 fn mapper_returns_neutral_state_when_capture_is_disabled() {
     let profile = default_left_joycon_profile();
     let input = LatestInputState::from_snapshot(
@@ -231,6 +249,49 @@ fn state_for(
             mouse_delta_x: 0.0,
             mouse_delta_y: 0.0,
             pointer_locked: false,
+            capture_enabled: true,
+            timestamp_ms: 1,
+        },
+        true,
+    );
+
+    map_input_to_controller(&input, profile)
+}
+
+fn mouse_state_for(
+    profile: &crate::model::Profile,
+    mouse_delta_x: f32,
+    mouse_delta_y: f32,
+    pointer_locked: bool,
+    alt_held: bool,
+) -> crate::bridge_protocol::ControllerStatePayload {
+    let key_codes = if alt_held { &["AltLeft"][..] } else { &[][..] };
+    mouse_state_for_codes(
+        profile,
+        mouse_delta_x,
+        mouse_delta_y,
+        pointer_locked,
+        key_codes,
+    )
+}
+
+fn mouse_state_for_codes(
+    profile: &crate::model::Profile,
+    mouse_delta_x: f32,
+    mouse_delta_y: f32,
+    pointer_locked: bool,
+    key_codes: &[&str],
+) -> crate::bridge_protocol::ControllerStatePayload {
+    let input = LatestInputState::from_snapshot(
+        InputSnapshot {
+            pressed_codes: key_codes
+                .iter()
+                .map(|key_code| key_code.to_string())
+                .collect(),
+            mouse_buttons: vec![],
+            mouse_delta_x,
+            mouse_delta_y,
+            pointer_locked,
             capture_enabled: true,
             timestamp_ms: 1,
         },

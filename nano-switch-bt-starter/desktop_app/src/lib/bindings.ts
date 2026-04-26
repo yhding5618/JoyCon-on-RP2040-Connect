@@ -128,6 +128,9 @@ const proControllerButtonBits: Record<string, number> = {
   home: rightJoyConButtonBits.home,
 };
 
+const stickExtent = 32767;
+const mouseStickUnitsPerPixel = 1024;
+
 let browserState: AppStateSnapshot = {
   serial: {
     availablePorts: [],
@@ -605,12 +608,12 @@ export function pushInputSnapshot(
     { snapshot },
     () => {
       const pressed = new Set(snapshot.pressedCodes);
+      const controllerModel = browserState.profile.activeProfile.controllerModel;
       let buttons = 0;
-      const stickExtent = 32767;
       let lx = 0;
       let ly = 0;
 
-      if (browserState.profile.activeProfile.controllerModel === "RightJoyCon") {
+      if (controllerModel === "RightJoyCon") {
         if (pressed.has("KeyW")) lx -= stickExtent;
         if (pressed.has("KeyS")) lx += stickExtent;
         if (pressed.has("KeyA")) ly -= stickExtent;
@@ -625,7 +628,7 @@ export function pushInputSnapshot(
         if (pressed.has("ShiftRight")) buttons |= rightJoyConButtonBits.stick;
         if (pressed.has("KeyO")) buttons |= rightJoyConButtonBits.home;
         if (pressed.has("Home")) buttons |= rightJoyConButtonBits.home;
-      } else if (browserState.profile.activeProfile.controllerModel === "ProController") {
+      } else if (controllerModel === "ProController") {
         if (pressed.has("KeyA")) lx -= stickExtent;
         if (pressed.has("KeyD")) lx += stickExtent;
         if (pressed.has("KeyS")) ly -= stickExtent;
@@ -667,33 +670,58 @@ export function pushInputSnapshot(
         if (pressed.has("KeyO")) buttons |= leftJoyConButtonBits.capture;
       }
 
-      if (!snapshot.captureEnabled || !document.hasFocus()) {
+      const mouse = browserState.profile.activeProfile.mouse;
+      let mouseRx = 0;
+      let mouseRy = 0;
+      if (
+        controllerModel !== "LeftJoyCon" &&
+        mouse.enabled &&
+        snapshot.pointerLocked &&
+        isAltLeftHeld(pressed)
+      ) {
+        mouseRx = mouseAxis(
+          snapshot.mouseDeltaX,
+          mouse.sensitivityX,
+          mouse.deadzone,
+        );
+        mouseRy = mouseAxis(
+          mouse.invertY ? snapshot.mouseDeltaY : -snapshot.mouseDeltaY,
+          mouse.sensitivityY,
+          mouse.deadzone,
+        );
+      }
+
+      const windowFocused = document.hasFocus();
+
+      if (!snapshot.captureEnabled || !windowFocused) {
         buttons = 0;
         lx = 0;
         ly = 0;
+        mouseRx = 0;
+        mouseRy = 0;
       }
 
       browserState = {
         ...browserState,
         input: {
           ...snapshot,
-          windowFocused: document.hasFocus(),
+          windowFocused,
         },
         controller: {
           ...browserState.controller,
           buttons,
-          lx: browserState.profile.activeProfile.controllerModel === "RightJoyCon"
+          lx: controllerModel === "RightJoyCon"
             ? 0
-            : Math.max(-stickExtent, Math.min(stickExtent, lx)),
-          ly: browserState.profile.activeProfile.controllerModel === "RightJoyCon"
+            : clampStickAxis(lx),
+          ly: controllerModel === "RightJoyCon"
             ? 0
-            : Math.max(-stickExtent, Math.min(stickExtent, ly)),
-          rx: browserState.profile.activeProfile.controllerModel === "RightJoyCon"
-            ? Math.max(-stickExtent, Math.min(stickExtent, lx))
-            : 0,
-          ry: browserState.profile.activeProfile.controllerModel === "RightJoyCon"
-            ? Math.max(-stickExtent, Math.min(stickExtent, ly))
-            : 0,
+            : clampStickAxis(ly),
+          rx: clampStickAxis(
+            (controllerModel === "RightJoyCon" ? lx : 0) + mouseRx,
+          ),
+          ry: clampStickAxis(
+            (controllerModel === "RightJoyCon" ? ly : 0) + mouseRy,
+          ),
         },
         diagnostics: {
           ...browserState.diagnostics,
@@ -705,4 +733,20 @@ export function pushInputSnapshot(
       return browserState;
     },
   );
+}
+
+function mouseAxis(delta: number, sensitivity: number, deadzone: number): number {
+  const raw = delta * Math.max(0, sensitivity) * mouseStickUnitsPerPixel;
+  const clamped = Math.max(-stickExtent, Math.min(stickExtent, raw));
+  const threshold = stickExtent * Math.max(0, Math.min(1, deadzone));
+
+  return Math.abs(clamped) < threshold ? 0 : Math.round(clamped);
+}
+
+function clampStickAxis(value: number): number {
+  return Math.max(-stickExtent, Math.min(stickExtent, Math.round(value)));
+}
+
+function isAltLeftHeld(pressed: Set<string>): boolean {
+  return pressed.has("AltLeft");
 }
