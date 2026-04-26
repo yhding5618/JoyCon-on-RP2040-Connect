@@ -12,6 +12,8 @@ import {
   setBluetoothEnabledCommand,
   setCaptureEnabledCommand,
   setControllerModeCommand,
+  startAutomationCommand,
+  stopAutomationCommand,
   tapControllerButtonCommand,
   virtualCableUnplugCommand,
 } from "../lib/bindings";
@@ -20,7 +22,7 @@ import { useKeyboardCapture } from "./useKeyboardCapture";
 import { useMouseCapture } from "./useMouseCapture";
 import type { InputSnapshot } from "../models/input";
 import type { ControllerModel } from "../models/profile";
-import type { AppStateSnapshot } from "../models/ui";
+import type { AppStateSnapshot, AutomationAction } from "../models/ui";
 
 export function useControllerInput() {
   const [appState, setAppState] = useState<AppStateSnapshot | null>(null);
@@ -32,12 +34,17 @@ export function useControllerInput() {
   const [directTapOverlay, setDirectTapOverlay] = useState<string[]>([]);
 
   const captureEnabledRef = useRef(false);
+  const automationRunningRef = useRef(false);
   const currentSnapshotRef = useRef<InputSnapshot>(defaultInputSnapshot);
   const pushInFlightRef = useRef(false);
   const lastSentHashRef = useRef<string | null>(null);
   const lastCaptureEnabledRef = useRef(false);
 
   const handleToggleCaptureHotkey = useCallback(() => {
+    if (automationRunningRef.current) {
+      return;
+    }
+
     setCaptureEnabled(!captureEnabledRef.current);
   }, []);
 
@@ -62,7 +69,9 @@ export function useControllerInput() {
 
   useEffect(() => {
     let cancelled = false;
-    const timer = window.setInterval(() => {
+    let timer: number | undefined;
+
+    const poll = () => {
       void getAppStateSnapshot()
         .then((state) => {
           if (!cancelled) {
@@ -71,15 +80,48 @@ export function useControllerInput() {
         })
         .catch(() => {
           // Command-triggered calls surface errors; this passive refresh only keeps diagnostics current.
+        })
+        .finally(() => {
+          if (!cancelled) {
+            timer = window.setTimeout(
+              poll,
+              automationRunningRef.current ? 75 : 250,
+            );
+          }
         });
-    }, 250);
+    };
+
+    poll();
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!appState?.automation.running) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      stopAutomation();
+    };
+
+    window.addEventListener("keydown", handleEscape, true);
+    return () => window.removeEventListener("keydown", handleEscape, true);
+    // stopAutomation is a local command wrapper; appState.automation.running controls listener lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appState?.automation.running]);
 
   const snapshot = useMemo<InputSnapshot>(
     () => ({
@@ -118,7 +160,8 @@ export function useControllerInput() {
         return;
       }
 
-      const captureNow = captureEnabledRef.current;
+      const captureNow =
+        captureEnabledRef.current && !automationRunningRef.current;
       const needsRelease = lastCaptureEnabledRef.current && !captureNow;
       const shouldSend = captureNow || needsRelease;
       const timestampMs = Date.now();
@@ -180,6 +223,8 @@ export function useControllerInput() {
     keyboard,
     directTapOverlay,
     setCaptureEnabled,
+    startAutomation,
+    stopAutomation,
     requestPointerLock: mouse.requestPointerLock,
     releasePointerLock: mouse.releasePointerLock,
     releaseAll: () => {
@@ -242,6 +287,11 @@ export function useControllerInput() {
       void runCommand("clear-command-log", () => clearCommandLogCommand());
     },
     setControllerMode: (mode: ControllerModel) => {
+      if (automationRunningRef.current) {
+        setError("Stop automation before changing controller mode.");
+        return;
+      }
+
       keyboard.clear();
       mouse.resetMouseDelta();
       mouse.releasePointerLock();
@@ -250,6 +300,11 @@ export function useControllerInput() {
       void runCommand("set-mode", () => setControllerModeCommand(mode));
     },
     turnOnBluetoothWithMode: (mode: ControllerModel) => {
+      if (automationRunningRef.current) {
+        setError("Stop automation before changing Bluetooth state.");
+        return;
+      }
+
       keyboard.clear();
       mouse.resetMouseDelta();
       mouse.releasePointerLock();
@@ -268,6 +323,11 @@ export function useControllerInput() {
       });
     },
     setBluetoothEnabled: (enabled: boolean) => {
+      if (automationRunningRef.current) {
+        setError("Stop automation before changing Bluetooth state.");
+        return;
+      }
+
       if (!enabled) {
         keyboard.clear();
         mouse.resetMouseDelta();
@@ -287,6 +347,11 @@ export function useControllerInput() {
       });
     },
     tapControllerButton: (button: string, durationMs = 120) => {
+      if (automationRunningRef.current) {
+        setError("Direct tap is disabled while automation is running.");
+        return;
+      }
+
       if (captureEnabledRef.current) {
         setError("Direct tap is disabled while capture is active.");
         return;
@@ -306,6 +371,11 @@ export function useControllerInput() {
   };
 
   function setCaptureEnabled(enabled: boolean) {
+    if (enabled && automationRunningRef.current) {
+      setError("Capture is disabled while automation is running.");
+      return;
+    }
+
     captureEnabledRef.current = enabled;
     setCaptureEnabledState(enabled);
 
@@ -316,6 +386,41 @@ export function useControllerInput() {
     }
 
     void runCommand("capture-toggle", () => setCaptureEnabledCommand(enabled));
+  }
+
+  function startAutomation(sequence: AutomationAction[], loopCount: number) {
+    if (automationRunningRef.current) {
+      setError("Automation is already running.");
+      return;
+    }
+
+    const currentState = appState ?? defaultAppStateSnapshot();
+    if (currentState.serial.connectionState !== "Connected") {
+      setError("Connect serial before starting automation.");
+      return;
+    }
+
+    keyboard.clear();
+    mouse.resetMouseDelta();
+    mouse.releasePointerLock();
+    captureEnabledRef.current = false;
+    setCaptureEnabledState(false);
+
+    void runCommand("automation-start", () =>
+      startAutomationCommand(sequence, loopCount),
+    ).catch(() => undefined);
+  }
+
+  function stopAutomation() {
+    keyboard.clear();
+    mouse.resetMouseDelta();
+    mouse.releasePointerLock();
+    captureEnabledRef.current = false;
+    setCaptureEnabledState(false);
+
+    void runCommand("automation-stop", () => stopAutomationCommand()).catch(
+      () => undefined,
+    );
   }
 
   async function runCommand(
@@ -337,6 +442,18 @@ export function useControllerInput() {
   }
 
   function applySnapshot(nextSnapshot: AppStateSnapshot) {
+    const automationStarted =
+      nextSnapshot.automation.running && !automationRunningRef.current;
+    automationRunningRef.current = nextSnapshot.automation.running;
+
+    if (automationStarted) {
+      keyboard.clear();
+      mouse.resetMouseDelta();
+      mouse.releasePointerLock();
+      lastSentHashRef.current = null;
+      lastCaptureEnabledRef.current = false;
+    }
+
     setAppState(nextSnapshot);
     captureEnabledRef.current = nextSnapshot.input.captureEnabled;
     setCaptureEnabledState(nextSnapshot.input.captureEnabled);
@@ -394,6 +511,13 @@ function defaultAppStateSnapshot(): AppStateSnapshot {
     profile: {
       activeProfileId: defaultProControllerProfile.id,
       activeProfile: defaultProControllerProfile,
+    },
+    automation: {
+      running: false,
+      loopCount: 0,
+      currentLoop: 0,
+      currentActionIndex: null,
+      lastError: null,
     },
     input: {
       pressedCodes: [],

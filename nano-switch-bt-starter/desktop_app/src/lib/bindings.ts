@@ -5,7 +5,7 @@ import {
 } from "./defaults";
 import { invokeTauri } from "./tauri";
 import type { InputSnapshot } from "../models/input";
-import type { AppStateSnapshot } from "../models/ui";
+import type { AppStateSnapshot, AutomationAction } from "../models/ui";
 import type { ControllerModel } from "../models/profile";
 
 const mockStatus = {
@@ -144,6 +144,13 @@ let browserState: AppStateSnapshot = {
     activeProfileId: defaultProControllerProfile.id,
     activeProfile: defaultProControllerProfile,
   },
+  automation: {
+    running: false,
+    loopCount: 0,
+    currentLoop: 0,
+    currentActionIndex: null,
+    lastError: null,
+  },
   input: {
     ...defaultInputSnapshot,
     windowFocused: true,
@@ -211,6 +218,98 @@ export function setCaptureEnabledCommand(
         input: {
           ...browserState.input,
           captureEnabled: enabled,
+        },
+      };
+
+      return browserState;
+    },
+  );
+}
+
+export function startAutomationCommand(
+  sequence: AutomationAction[],
+  loopCount: number,
+): Promise<AppStateSnapshot> {
+  return invokeTauri(
+    "start_automation",
+    { sequence, loopCount },
+    () => {
+      browserState = {
+        ...browserState,
+        automation: {
+          running: true,
+          loopCount,
+          currentLoop: 1,
+          currentActionIndex: sequence.length > 0 ? 0 : null,
+          lastError: null,
+        },
+        input: {
+          ...browserState.input,
+          captureEnabled: false,
+          pressedCodes: [],
+          mouseButtons: [],
+          mouseDeltaX: 0,
+          mouseDeltaY: 0,
+          pointerLocked: false,
+        },
+        controller: {
+          ...browserState.controller,
+          buttons: 0,
+          lx: 0,
+          ly: 0,
+          rx: 0,
+          ry: 0,
+        },
+        diagnostics: {
+          ...browserState.diagnostics,
+          recentLogs: [
+            `Automation started: ${sequence.length} actions x ${loopCount}`,
+            ...browserState.diagnostics.recentLogs,
+          ].slice(0, 8),
+        },
+      };
+
+      return browserState;
+    },
+  );
+}
+
+export function stopAutomationCommand(): Promise<AppStateSnapshot> {
+  return invokeTauri(
+    "stop_automation",
+    undefined,
+    () => {
+      browserState = {
+        ...browserState,
+        automation: {
+          ...browserState.automation,
+          running: false,
+          currentLoop: 0,
+          currentActionIndex: null,
+        },
+        input: {
+          ...browserState.input,
+          captureEnabled: false,
+          pressedCodes: [],
+          mouseButtons: [],
+          mouseDeltaX: 0,
+          mouseDeltaY: 0,
+          pointerLocked: false,
+        },
+        controller: {
+          ...browserState.controller,
+          buttons: 0,
+          lx: 0,
+          ly: 0,
+          rx: 0,
+          ry: 0,
+        },
+        diagnostics: {
+          ...browserState.diagnostics,
+          recentLogs: [
+            "Automation stopped",
+            ...browserState.diagnostics.recentLogs,
+          ].slice(0, 8),
         },
       };
 
@@ -607,6 +706,23 @@ export function pushInputSnapshot(
     "push_input_snapshot",
     { snapshot },
     () => {
+      if (browserState.automation.running) {
+        browserState = {
+          ...browserState,
+          input: {
+            ...browserState.input,
+            captureEnabled: false,
+            pressedCodes: [],
+            mouseButtons: [],
+            mouseDeltaX: 0,
+            mouseDeltaY: 0,
+            pointerLocked: false,
+          },
+        };
+
+        return browserState;
+      }
+
       const pressed = new Set(snapshot.pressedCodes);
       const controllerModel = browserState.profile.activeProfile.controllerModel;
       let buttons = 0;

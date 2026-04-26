@@ -1,6 +1,6 @@
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, RwLock,
+    Arc, Mutex, RwLock,
 };
 use std::thread;
 use std::time::Duration;
@@ -8,8 +8,8 @@ use std::time::Duration;
 use crate::bridge_protocol::ControllerStatePayload;
 use crate::diagnostics::{note_serial_error, note_serial_frames, push_log};
 use crate::model::{
-    ActiveProfileState, AppStateSnapshot, ConnectionState, DiagnosticsState, LatestInputState,
-    SerialSessionState,
+    ActiveProfileState, AppStateSnapshot, AutomationState, ConnectionState, DiagnosticsState,
+    LatestInputState, SerialSessionState,
 };
 use crate::profiles::default_pro_controller_profile;
 use crate::serial_worker::{SerialWorkerHandle, WorkerCommand, WorkerReply};
@@ -23,6 +23,7 @@ pub struct ManagedAppState {
     inner: Arc<RwLock<AppStateSnapshot>>,
     worker: SerialWorkerHandle,
     control_in_flight: Arc<AtomicBool>,
+    automation_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
 }
 
 impl ManagedAppState {
@@ -30,12 +31,14 @@ impl ManagedAppState {
         let inner = Arc::new(RwLock::new(initial_state()));
         let worker = SerialWorkerHandle::spawn();
         let control_in_flight = Arc::new(AtomicBool::new(false));
+        let automation_cancel = Arc::new(Mutex::new(None));
         spawn_output_loop(inner.clone(), worker.clone(), control_in_flight.clone());
 
         Self {
             inner,
             worker,
             control_in_flight,
+            automation_cancel,
         }
     }
 
@@ -50,6 +53,13 @@ impl ManagedAppState {
 
     pub fn request_worker(&self, command: WorkerCommand) -> Result<WorkerReply, String> {
         self.worker.request(command)
+    }
+
+    pub fn request_worker_control(&self, command: WorkerCommand) -> Result<WorkerReply, String> {
+        self.control_in_flight.store(true, Ordering::Release);
+        let result = self.worker.request(command);
+        self.control_in_flight.store(false, Ordering::Release);
+        result
     }
 
     pub async fn request_worker_async(
@@ -74,6 +84,48 @@ impl ManagedAppState {
         self.control_in_flight.store(false, Ordering::Release);
         result.map_err(|error| format!("serial worker task failed: {error}"))?
     }
+
+    pub fn begin_automation_token(&self) -> Arc<AtomicBool> {
+        let token = Arc::new(AtomicBool::new(false));
+        let mut current = self
+            .automation_cancel
+            .lock()
+            .expect("automation token lock poisoned");
+        *current = Some(token.clone());
+        token
+    }
+
+    pub fn cancel_automation_token(&self) {
+        if let Some(token) = self
+            .automation_cancel
+            .lock()
+            .expect("automation token lock poisoned")
+            .as_ref()
+        {
+            token.store(true, Ordering::Release);
+        }
+    }
+
+    pub fn automation_token_is_current(&self, token: &Arc<AtomicBool>) -> bool {
+        self.automation_cancel
+            .lock()
+            .expect("automation token lock poisoned")
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, token))
+    }
+
+    pub fn clear_automation_token(&self, token: &Arc<AtomicBool>) {
+        let mut current = self
+            .automation_cancel
+            .lock()
+            .expect("automation token lock poisoned");
+        if current
+            .as_ref()
+            .is_some_and(|current_token| Arc::ptr_eq(current_token, token))
+        {
+            *current = None;
+        }
+    }
 }
 
 impl Clone for ManagedAppState {
@@ -82,6 +134,7 @@ impl Clone for ManagedAppState {
             inner: self.inner.clone(),
             worker: self.worker.clone(),
             control_in_flight: self.control_in_flight.clone(),
+            automation_cancel: self.automation_cancel.clone(),
         }
     }
 }
@@ -217,6 +270,7 @@ fn initial_state() -> AppStateSnapshot {
             active_profile_id: profile.id.clone(),
             active_profile: profile,
         },
+        automation: AutomationState::default(),
         input: LatestInputState {
             pressed_codes: Vec::new(),
             mouse_buttons: Vec::new(),

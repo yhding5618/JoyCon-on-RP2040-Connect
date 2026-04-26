@@ -1,4 +1,5 @@
 pub mod app_state;
+pub mod automation;
 pub mod bridge_protocol;
 pub mod commands;
 pub mod controller_mapper;
@@ -23,6 +24,8 @@ pub fn run() {
             commands::clear_command_log,
             commands::push_input_snapshot,
             commands::set_capture_enabled,
+            commands::start_automation,
+            commands::stop_automation,
             commands::list_serial_ports,
             commands::select_serial_port,
             commands::connect_serial,

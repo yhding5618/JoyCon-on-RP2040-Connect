@@ -61,6 +61,7 @@ type VirtualControllerProps = {
   directTapOverlay: Set<string>;
   directTapAvailable: boolean;
   captureEnabled: boolean;
+  automationRunning: boolean;
   onTapControllerButton: (button: string, durationMs?: number) => void;
 };
 
@@ -71,13 +72,16 @@ export function VirtualController({
   directTapOverlay,
   directTapAvailable,
   captureEnabled,
+  automationRunning,
   onTapControllerButton,
 }: VirtualControllerProps) {
   const layout = VIRTUAL_CONTROLLER_LAYOUTS[model];
-  const canDirectTap = directTapAvailable && !captureEnabled;
-  const disabledReason = captureEnabled
-    ? "Direct tap disabled while capture is active"
-    : "Direct tap unavailable until serial is connected";
+  const canDirectTap = directTapAvailable && !captureEnabled && !automationRunning;
+  const disabledReason = automationRunning
+    ? "Direct tap disabled while automation is running"
+    : captureEnabled
+      ? "Direct tap disabled while capture is active"
+      : "Direct tap unavailable until serial is connected";
 
   return (
     <section className="controller-stage__controller" aria-label={layout.title}>

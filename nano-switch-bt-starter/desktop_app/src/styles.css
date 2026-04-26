@@ -36,7 +36,8 @@ body {
 }
 
 button,
-select {
+select,
+input {
   font: inherit;
 }
 
@@ -63,7 +64,8 @@ button:disabled {
   transform: none;
 }
 
-select {
+select,
+input {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 0.8rem;
@@ -129,7 +131,7 @@ select {
 .layout-grid {
   display: grid;
   gap: 1.25rem;
-  grid-template-columns: minmax(320px, 420px) minmax(760px, 1fr);
+  grid-template-columns: minmax(300px, 400px) minmax(620px, 1fr) minmax(320px, 400px);
   align-items: stretch;
   height: calc(100vh - 9rem);
   min-height: 560px;
@@ -162,6 +164,10 @@ select {
   min-width: 0;
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
+}
+
+.automation-column {
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .panel {
@@ -440,6 +446,145 @@ select {
   display: grid;
   gap: 0.25rem;
   min-width: min(100%, 260px);
+}
+
+.automation-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.automation-panel-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.automation-panel-shell .panel-header {
+  margin-bottom: 0.7rem;
+}
+
+.automation-panel__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.automation-panel__progress {
+  display: inline-flex;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.automation-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.55rem;
+}
+
+.automation-loop-control,
+.automation-duration-control {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 92px;
+}
+
+.automation-loop-control input,
+.automation-duration-control input {
+  padding: 0.56rem 0.65rem;
+}
+
+.automation-panel__error {
+  border: 1px solid rgba(255, 123, 138, 0.3);
+  border-radius: 0.7rem;
+  padding: 0.55rem 0.65rem;
+  background: rgba(255, 123, 138, 0.11);
+  color: #ffdbe0;
+  font-size: 0.82rem;
+}
+
+.automation-sequence {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0.55rem;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.automation-row {
+  display: grid;
+  grid-template-columns: 1.55rem minmax(62px, 1fr) minmax(58px, 0.9fr) 64px auto;
+  align-items: center;
+  gap: 0.28rem;
+  border: 1px solid rgba(172, 195, 217, 0.16);
+  border-radius: 0.7rem;
+  padding: 0.45rem;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.automation-row.is-active {
+  border-color: rgba(121, 216, 255, 0.7);
+  background: rgba(121, 216, 255, 0.12);
+  box-shadow: 0 0 0 1px rgba(121, 216, 255, 0.16);
+}
+
+.automation-row__index {
+  display: inline-grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border: 1px solid rgba(172, 195, 217, 0.24);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.automation-row select,
+.automation-row input {
+  min-width: 0;
+  font-size: 0.8rem;
+  min-height: 1.9rem;
+  padding: 0.38rem 0.42rem;
+  border-radius: 0.6rem;
+}
+
+.automation-row__controls {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 0.22rem;
+}
+
+.automation-row__controls button,
+.automation-panel__footer button,
+.automation-panel__actions button {
+  padding: 0.42rem 0.55rem;
+  font-size: 0.78rem;
+}
+
+.automation-row__controls button {
+  display: inline-grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.9rem;
+  padding: 0;
+  border-radius: 0.55rem;
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.automation-panel__footer {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .controller-stage__controller {
@@ -928,13 +1073,14 @@ select {
   }
 
   .layout-grid {
-    grid-template-columns: minmax(300px, 380px) minmax(680px, 1fr);
+    grid-template-columns: minmax(280px, 340px) minmax(560px, 1fr) minmax(300px, 360px);
   }
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1280px) {
   .layout-grid {
     grid-template-columns: 1fr;
+    height: auto;
   }
 
   .serial-connect-row {
@@ -947,5 +1093,9 @@ select {
 
   .virtual-controller--joycon.virtual-controller--single-horizontal {
     min-width: 0;
+  }
+
+  .automation-row__controls {
+    justify-content: flex-start;
   }
 }

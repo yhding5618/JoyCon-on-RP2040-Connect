@@ -80,6 +80,22 @@ export type ActiveProfileState = {
   activeProfile: Profile;
 };
 
+export type AutomationActionType = "hold" | "delay" | "release" | "tap";
+
+export type AutomationAction = {
+  actionType: AutomationActionType;
+  buttons: string[];
+  durationMs: number | null;
+};
+
+export type AutomationState = {
+  running: boolean;
+  loopCount: number;
+  currentLoop: number;
+  currentActionIndex: number | null;
+  lastError: string | null;
+};
+
 export type LatestInputState = {
   pressedCodes: string[];
   mouseButtons: number[];
@@ -119,6 +135,7 @@ export type DiagnosticsState = {
 export type AppStateSnapshot = {
   serial: SerialSessionState;
   profile: ActiveProfileState;
+  automation: AutomationState;
   input: LatestInputState;
   controller: ControllerStateUi;
   diagnostics: DiagnosticsState;

@@ -1,3 +1,7 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::Duration;
 
@@ -5,11 +9,12 @@ use tauri::State;
 
 use crate::app_state::sync_runtime_metrics;
 use crate::app_state::ManagedAppState;
+use crate::automation::{
+    build_automation_steps, controller_button_bits, state_with_buttons, validate_loop_count,
+    AutomationStep, AutomationStepType,
+};
 use crate::bridge_protocol::{
-    ControllerStatePayload, BTN_LJC_CAPTURE, BTN_LJC_DOWN, BTN_LJC_L, BTN_LJC_LEFT, BTN_LJC_MINUS,
-    BTN_LJC_RIGHT, BTN_LJC_SL, BTN_LJC_SR, BTN_LJC_STICK, BTN_LJC_UP, BTN_LJC_ZL, BTN_RJC_A,
-    BTN_RJC_B, BTN_RJC_HOME, BTN_RJC_PLUS, BTN_RJC_R, BTN_RJC_SL, BTN_RJC_SR, BTN_RJC_STICK,
-    BTN_RJC_X, BTN_RJC_Y, BTN_RJC_ZR, CONTROLLER_MODE_LEFT_JOYCON, CONTROLLER_MODE_PRO_CONTROLLER,
+    ControllerStatePayload, CONTROLLER_MODE_LEFT_JOYCON, CONTROLLER_MODE_PRO_CONTROLLER,
     CONTROLLER_MODE_RIGHT_JOYCON,
 };
 use crate::controller_mapper::map_input_to_controller;
@@ -18,7 +23,8 @@ use crate::diagnostics::{
 };
 use crate::errors::AppError;
 use crate::model::{
-    AppStateSnapshot, ConnectionState, ControllerModel, InputSnapshot, LatestInputState,
+    AppStateSnapshot, AutomationAction, AutomationState, ConnectionState, ControllerModel,
+    InputSnapshot, LatestInputState,
 };
 use crate::profiles::default_profile_for_model;
 use crate::serial_worker::{WorkerCommand, WorkerReply};
@@ -43,6 +49,10 @@ pub async fn set_capture_enabled(
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
     let state = state.inner().clone();
+    if enabled && state.snapshot().automation.running {
+        return Err("capture is disabled while automation is running".to_string());
+    }
+
     let released = if !enabled {
         release_controller_state_if_needed(&state)
             .await
@@ -83,6 +93,13 @@ pub fn push_input_snapshot(
         validate_input_snapshot(snapshot.normalized()).map_err(|error| error.to_string())?;
 
     Ok(state.update(|app_state| {
+        if app_state.automation.running {
+            app_state.input.capture_enabled = false;
+            app_state.input.release_all();
+            sync_runtime_metrics(app_state);
+            return app_state.clone();
+        }
+
         app_state.input = LatestInputState::from_snapshot(snapshot, app_state.input.window_focused);
         app_state.controller =
             map_input_to_controller(&app_state.input, &app_state.profile.active_profile);
@@ -92,6 +109,82 @@ pub fn push_input_snapshot(
             &app_state.controller,
         );
         sync_runtime_metrics(app_state);
+        app_state.clone()
+    }))
+}
+
+#[tauri::command]
+pub async fn start_automation(
+    sequence: Vec<AutomationAction>,
+    loop_count: u32,
+    state: State<'_, ManagedAppState>,
+) -> Result<AppStateSnapshot, String> {
+    validate_loop_count(loop_count)?;
+
+    let state = state.inner().clone();
+    let snapshot = state.snapshot();
+    if snapshot.serial.connection_state != ConnectionState::Connected {
+        return Err("connect serial before starting automation".to_string());
+    }
+    if snapshot.automation.running {
+        return Err("automation is already running".to_string());
+    }
+
+    let steps =
+        build_automation_steps(&sequence, snapshot.profile.active_profile.controller_model)?;
+    let released = release_controller_state_if_needed(&state).await?;
+    let token = state.begin_automation_token();
+
+    let start_snapshot = state.update(|app_state| {
+        app_state.input.capture_enabled = false;
+        app_state.input.release_all();
+        app_state.controller = ControllerStatePayload::default();
+        app_state.automation = AutomationState {
+            running: true,
+            loop_count,
+            current_loop: 1,
+            current_action_index: Some(0),
+            last_error: None,
+        };
+        if let Some((tx_frames, rx_frames)) = &released {
+            note_serial_frames(&mut app_state.diagnostics, tx_frames, rx_frames);
+        }
+        sync_runtime_metrics(app_state);
+        push_log(
+            &mut app_state.diagnostics,
+            format!(
+                "automation started: {} actions x {loop_count} loops",
+                steps.len()
+            ),
+        );
+        app_state.clone()
+    });
+
+    thread::spawn(move || run_automation(state, steps, loop_count, token));
+
+    Ok(start_snapshot)
+}
+
+#[tauri::command]
+pub async fn stop_automation(
+    state: State<'_, ManagedAppState>,
+) -> Result<AppStateSnapshot, String> {
+    let state = state.inner().clone();
+    state.cancel_automation_token();
+    let released = release_controller_state_if_needed(&state).await?;
+
+    Ok(state.update(|app_state| {
+        app_state.automation.running = false;
+        app_state.automation.current_loop = 0;
+        app_state.automation.current_action_index = None;
+        app_state.input.capture_enabled = false;
+        app_state.input.release_all();
+        app_state.controller = ControllerStatePayload::default();
+        if let Some((tx_frames, rx_frames)) = &released {
+            note_serial_frames(&mut app_state.diagnostics, tx_frames, rx_frames);
+        }
+        sync_runtime_metrics(app_state);
+        push_log(&mut app_state.diagnostics, "automation stopped");
         app_state.clone()
     }))
 }
@@ -317,6 +410,10 @@ pub async fn set_controller_mode(
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
     let state = state.inner().clone();
+    if state.snapshot().automation.running {
+        return Err("stop automation before changing controller mode".to_string());
+    }
+
     let released = release_controller_state_if_needed(&state).await?;
     state.update(|app_state| {
         app_state.input.capture_enabled = false;
@@ -345,6 +442,10 @@ pub async fn set_bluetooth_enabled(
     state: State<'_, ManagedAppState>,
 ) -> Result<AppStateSnapshot, String> {
     let state = state.inner().clone();
+    if state.snapshot().automation.running {
+        return Err("stop automation before changing Bluetooth state".to_string());
+    }
+
     let released = if enabled {
         None
     } else {
@@ -422,8 +523,11 @@ async fn tap_controller_button_impl(
     if snapshot.input.capture_enabled {
         return Err("direct tap is disabled while capture is active".to_string());
     }
+    if snapshot.automation.running {
+        return Err("direct tap is disabled while automation is running".to_string());
+    }
 
-    let controller_model = state.snapshot().profile.active_profile.controller_model;
+    let controller_model = snapshot.profile.active_profile.controller_model;
     let buttons = controller_button_bits(&button, controller_model)?;
     let duration = Duration::from_millis(duration_ms.unwrap_or(120).clamp(25, 2000));
 
@@ -462,6 +566,228 @@ async fn tap_controller_button_impl(
     Ok(snapshot)
 }
 
+enum AutomationFinish {
+    Completed,
+    Cancelled,
+    Failed(String),
+}
+
+fn run_automation(
+    state: ManagedAppState,
+    steps: Vec<AutomationStep>,
+    loop_count: u32,
+    token: Arc<AtomicBool>,
+) {
+    let mut held_buttons = 0u32;
+    let mut finish = AutomationFinish::Completed;
+
+    'automation: for loop_index in 0..loop_count {
+        if automation_cancelled(&state, &token) {
+            finish = AutomationFinish::Cancelled;
+            break;
+        }
+
+        for (action_index, step) in steps.iter().enumerate() {
+            if automation_cancelled(&state, &token) {
+                finish = AutomationFinish::Cancelled;
+                break 'automation;
+            }
+
+            update_automation_progress(&state, &token, loop_index + 1, Some(action_index));
+
+            let result = match step.step_type {
+                AutomationStepType::Hold => {
+                    held_buttons |= step.buttons;
+                    send_automation_payload(&state, state_with_buttons(held_buttons)).map(|()| true)
+                }
+                AutomationStepType::Release => {
+                    held_buttons &= !step.buttons;
+                    send_automation_payload(&state, state_with_buttons(held_buttons)).map(|()| true)
+                }
+                AutomationStepType::Delay => Ok(wait_for_automation_duration(
+                    step.duration_ms,
+                    &state,
+                    &token,
+                )),
+                AutomationStepType::Tap => {
+                    send_automation_payload(&state, state_with_buttons(held_buttons | step.buttons))
+                        .and_then(|()| {
+                            if wait_for_automation_duration(step.duration_ms, &state, &token) {
+                                send_automation_payload(&state, state_with_buttons(held_buttons))
+                                    .map(|()| true)
+                            } else {
+                                Ok(false)
+                            }
+                        })
+                }
+            };
+
+            match result {
+                Ok(true) => {}
+                Ok(false) => {
+                    finish = AutomationFinish::Cancelled;
+                    break 'automation;
+                }
+                Err(error) => {
+                    finish = AutomationFinish::Failed(error);
+                    break 'automation;
+                }
+            }
+        }
+
+        if automation_cancelled(&state, &token) {
+            finish = AutomationFinish::Cancelled;
+            break;
+        }
+
+        if held_buttons != 0 {
+            held_buttons = 0;
+            if let Err(error) = send_automation_payload(&state, ControllerStatePayload::default()) {
+                finish = AutomationFinish::Failed(error);
+                break;
+            }
+        }
+    }
+
+    finish_automation(state, &token, finish);
+}
+
+fn automation_cancelled(state: &ManagedAppState, token: &Arc<AtomicBool>) -> bool {
+    token.load(Ordering::Acquire) || !state.automation_token_is_current(token)
+}
+
+fn wait_for_automation_duration(
+    duration_ms: u64,
+    state: &ManagedAppState,
+    token: &Arc<AtomicBool>,
+) -> bool {
+    let mut remaining_ms = duration_ms;
+    while remaining_ms > 0 {
+        if automation_cancelled(state, token) {
+            return false;
+        }
+
+        let chunk_ms = remaining_ms.min(10);
+        thread::sleep(Duration::from_millis(chunk_ms));
+        remaining_ms -= chunk_ms;
+    }
+
+    !automation_cancelled(state, token)
+}
+
+fn update_automation_progress(
+    state: &ManagedAppState,
+    token: &Arc<AtomicBool>,
+    current_loop: u32,
+    current_action_index: Option<usize>,
+) {
+    if !state.automation_token_is_current(token) {
+        return;
+    }
+
+    state.update(|app_state| {
+        if app_state.automation.running {
+            app_state.automation.current_loop = current_loop;
+            app_state.automation.current_action_index = current_action_index;
+        }
+    });
+}
+
+fn send_automation_payload(
+    state: &ManagedAppState,
+    payload: ControllerStatePayload,
+) -> Result<(), String> {
+    let reply = state.request_worker_control(WorkerCommand::SendState(payload));
+    match reply {
+        Ok(WorkerReply::StateSent {
+            tx_frames,
+            rx_frames,
+        }) => {
+            state.update(|app_state| {
+                note_serial_frames(&mut app_state.diagnostics, &tx_frames, &rx_frames);
+                app_state.serial.last_connect_error = None;
+                app_state.controller = payload;
+                sync_runtime_metrics(app_state);
+            });
+            Ok(())
+        }
+        Ok(_) => record_automation_serial_error(
+            state,
+            "unexpected serial worker response for automation state frame".to_string(),
+        ),
+        Err(error) => record_automation_serial_error(state, error),
+    }
+}
+
+fn record_automation_serial_error(state: &ManagedAppState, error: String) -> Result<(), String> {
+    state.update(|app_state| {
+        app_state.serial.last_connect_error = Some(error.clone());
+        note_serial_error(&mut app_state.diagnostics, error.clone());
+        sync_runtime_metrics(app_state);
+    });
+    Err(error)
+}
+
+fn finish_automation(state: ManagedAppState, token: &Arc<AtomicBool>, finish: AutomationFinish) {
+    if !state.automation_token_is_current(token) {
+        return;
+    }
+
+    if matches!(finish, AutomationFinish::Cancelled) {
+        state.clear_automation_token(token);
+        return;
+    }
+
+    let release_error = release_automation_state_if_needed(&state);
+
+    state.update(|app_state| {
+        app_state.automation.running = false;
+        app_state.automation.current_loop = 0;
+        app_state.automation.current_action_index = None;
+        app_state.input.capture_enabled = false;
+        app_state.input.release_all();
+        app_state.controller = ControllerStatePayload::default();
+
+        match finish {
+            AutomationFinish::Completed => {
+                app_state.automation.last_error = release_error.clone();
+                if let Some(error) = &release_error {
+                    push_log(
+                        &mut app_state.diagnostics,
+                        format!("automation completed, but release failed: {error}"),
+                    );
+                } else {
+                    push_log(&mut app_state.diagnostics, "automation completed");
+                }
+            }
+            AutomationFinish::Failed(error) => {
+                let final_error = release_error
+                    .as_ref()
+                    .map(|release| format!("{error}; release failed: {release}"))
+                    .unwrap_or(error);
+                app_state.automation.last_error = Some(final_error.clone());
+                push_log(
+                    &mut app_state.diagnostics,
+                    format!("automation failed: {final_error}"),
+                );
+            }
+            AutomationFinish::Cancelled => {}
+        }
+
+        sync_runtime_metrics(app_state);
+    });
+
+    state.clear_automation_token(token);
+}
+
+fn release_automation_state_if_needed(state: &ManagedAppState) -> Option<String> {
+    if state.snapshot().controller == ControllerStatePayload::default() {
+        return None;
+    }
+
+    send_automation_payload(state, ControllerStatePayload::default()).err()
+}
+
 fn validate_input_snapshot(snapshot: InputSnapshot) -> Result<InputSnapshot, AppError> {
     if snapshot.pressed_codes.len() > 64 {
         return Err(AppError::TooManyPressedKeys(snapshot.pressed_codes.len()));
@@ -477,59 +803,6 @@ fn validate_input_snapshot(snapshot: InputSnapshot) -> Result<InputSnapshot, App
     }
 
     Ok(snapshot)
-}
-
-fn controller_button_bits(button: &str, controller_model: ControllerModel) -> Result<u32, String> {
-    match controller_model {
-        ControllerModel::RightJoyCon => match button {
-            "a" => Ok(BTN_RJC_A),
-            "b" => Ok(BTN_RJC_B),
-            "x" => Ok(BTN_RJC_X),
-            "y" => Ok(BTN_RJC_Y),
-            "sl" => Ok(BTN_RJC_SL),
-            "sr" => Ok(BTN_RJC_SR),
-            "r" | "l" => Ok(BTN_RJC_R),
-            "zr" | "zl" => Ok(BTN_RJC_ZR),
-            "plus" | "minus" => Ok(BTN_RJC_PLUS),
-            "stick" => Ok(BTN_RJC_STICK),
-            "home" | "capture" => Ok(BTN_RJC_HOME),
-            _ => Err(format!("unsupported Right Joy-Con button: {button}")),
-        },
-        ControllerModel::ProController => match button {
-            "a" => Ok(BTN_RJC_A),
-            "b" => Ok(BTN_RJC_B),
-            "x" => Ok(BTN_RJC_X),
-            "y" => Ok(BTN_RJC_Y),
-            "down" => Ok(BTN_LJC_DOWN),
-            "up" => Ok(BTN_LJC_UP),
-            "right" => Ok(BTN_LJC_RIGHT),
-            "left" => Ok(BTN_LJC_LEFT),
-            "l" => Ok(BTN_LJC_L),
-            "r" => Ok(BTN_RJC_R),
-            "zl" => Ok(BTN_LJC_ZL),
-            "zr" => Ok(BTN_RJC_ZR),
-            "minus" => Ok(BTN_LJC_MINUS),
-            "plus" => Ok(BTN_RJC_PLUS),
-            "stick" => Ok(BTN_LJC_STICK),
-            "capture" => Ok(BTN_LJC_CAPTURE),
-            "home" => Ok(BTN_RJC_HOME),
-            _ => Err(format!("unsupported Pro Controller button: {button}")),
-        },
-        _ => match button {
-            "a" | "down" => Ok(BTN_LJC_DOWN),
-            "y" | "up" => Ok(BTN_LJC_UP),
-            "x" | "right" => Ok(BTN_LJC_RIGHT),
-            "b" | "left" => Ok(BTN_LJC_LEFT),
-            "sl" => Ok(BTN_LJC_SL),
-            "sr" => Ok(BTN_LJC_SR),
-            "l" | "r" => Ok(BTN_LJC_L),
-            "zl" | "zr" => Ok(BTN_LJC_ZL),
-            "minus" | "plus" => Ok(BTN_LJC_MINUS),
-            "stick" => Ok(BTN_LJC_STICK),
-            "capture" | "home" => Ok(BTN_LJC_CAPTURE),
-            _ => Err(format!("unsupported Left Joy-Con button: {button}")),
-        },
-    }
 }
 
 fn controller_model_to_protocol_mode(model: ControllerModel) -> u8 {

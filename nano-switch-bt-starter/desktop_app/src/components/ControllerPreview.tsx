@@ -10,6 +10,7 @@ type ControllerPreviewProps = {
   serial: SerialSessionState;
   controller: ControllerStateUi;
   latestSnapshot: InputSnapshot;
+  automationRunning: boolean;
   captureEnabled: boolean;
   loading: boolean;
   observedPressedCodes: string[];
@@ -25,6 +26,7 @@ export function ControllerPreview({
   serial,
   controller,
   latestSnapshot,
+  automationRunning,
   captureEnabled,
   loading,
   observedPressedCodes,
@@ -48,7 +50,9 @@ export function ControllerPreview({
     }
   }, [bluetoothEnabled, profile.controllerModel]);
 
-  const canChangeBluetoothMode = !loading && isConnected && !bluetoothEnabled;
+  const commandControlsDisabled = loading || automationRunning;
+  const canChangeBluetoothMode =
+    !commandControlsDisabled && isConnected && !bluetoothEnabled;
   const displayedBluetoothMode =
     bluetoothEnabled && firmwareMode ? firmwareMode : selectedBluetoothMode;
 
@@ -72,7 +76,7 @@ export function ControllerPreview({
         </label>
         <button
           className={bluetoothEnabled ? "button-danger" : "button-accent"}
-          disabled={loading || !isConnected}
+          disabled={commandControlsDisabled || !isConnected}
           onClick={() =>
             bluetoothEnabled
               ? onSetBluetoothEnabled(false)
@@ -90,6 +94,7 @@ export function ControllerPreview({
         observedPressedCodes={observedPressedCodes}
         directTapOverlay={directTapOverlay}
         directTapAvailable={directTapAvailable}
+        automationRunning={automationRunning}
         onTapControllerButton={onTapControllerButton}
       />
     </Panel>

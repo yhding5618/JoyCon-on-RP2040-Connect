@@ -1,5 +1,7 @@
+import { AutomationPanel } from "./components/AutomationPanel";
 import { CommandLogPanel } from "./components/CommandLogPanel";
 import { ControllerPreview } from "./components/ControllerPreview";
+import { Panel } from "./components/Panel";
 import { SerialPanel } from "./components/SerialPanel";
 import { useControllerInput } from "./hooks/useControllerInput";
 
@@ -21,9 +23,12 @@ export default function App() {
     turnOnBluetoothWithMode,
     setBluetoothEnabled,
     tapControllerButton,
+    startAutomation,
+    stopAutomation,
   } = useControllerInput();
 
   const isBusy = isLoading || pendingAction !== null;
+  const automationRunning = appState.automation.running;
   const visiblePressedCodes = captureEnabled ? keyboard.observedPressedCodes : [];
 
   return (
@@ -71,17 +76,31 @@ export default function App() {
             serial={appState.serial}
             controller={appState.controller}
             latestSnapshot={latestSnapshot}
+            automationRunning={automationRunning}
             captureEnabled={captureEnabled}
             loading={isBusy}
             observedPressedCodes={visiblePressedCodes}
             directTapOverlay={directTapOverlay}
             directTapAvailable={
-              appState.serial.connectionState === "Connected" && !isBusy
+              appState.serial.connectionState === "Connected" &&
+              !isBusy &&
+              !automationRunning
             }
             onTurnOnBluetoothWithMode={turnOnBluetoothWithMode}
             onSetBluetoothEnabled={setBluetoothEnabled}
             onTapControllerButton={tapControllerButton}
           />
+        </div>
+
+        <div className="column-stack automation-column">
+          <Panel title="Automation" className="automation-panel-shell">
+            <AutomationPanel
+              automation={appState.automation}
+              loading={isBusy}
+              onStart={startAutomation}
+              onStop={stopAutomation}
+            />
+          </Panel>
         </div>
       </section>
     </main>

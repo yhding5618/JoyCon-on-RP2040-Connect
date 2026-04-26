@@ -97,6 +97,33 @@ pub struct ActiveProfileState {
     pub active_profile: Profile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutomationActionType {
+    Hold,
+    Delay,
+    Release,
+    Tap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationAction {
+    pub action_type: AutomationActionType,
+    pub buttons: Vec<String>,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationState {
+    pub running: bool,
+    pub loop_count: u32,
+    pub current_loop: u32,
+    pub current_action_index: Option<usize>,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputSnapshot {
@@ -215,6 +242,7 @@ pub struct DiagnosticsState {
 pub struct AppStateSnapshot {
     pub serial: SerialSessionState,
     pub profile: ActiveProfileState,
+    pub automation: AutomationState,
     pub input: LatestInputState,
     pub controller: ControllerStateUi,
     pub diagnostics: DiagnosticsState,

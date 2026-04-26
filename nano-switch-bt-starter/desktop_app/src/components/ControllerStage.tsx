@@ -14,6 +14,7 @@ type ControllerStageProps = {
   observedPressedCodes: string[];
   directTapOverlay: string[];
   directTapAvailable: boolean;
+  automationRunning: boolean;
   onTapControllerButton: (button: string, durationMs?: number) => void;
 };
 
@@ -25,6 +26,7 @@ export function ControllerStage({
   observedPressedCodes,
   directTapOverlay,
   directTapAvailable,
+  automationRunning,
   onTapControllerButton,
 }: ControllerStageProps) {
   const observedPressedSet = useMemo(
@@ -57,6 +59,7 @@ export function ControllerStage({
         directTapOverlay={directTapOverlaySet}
         directTapAvailable={directTapAvailable}
         captureEnabled={captureEnabled}
+        automationRunning={automationRunning}
         onTapControllerButton={onTapControllerButton}
       />
       <VirtualKeyboard
