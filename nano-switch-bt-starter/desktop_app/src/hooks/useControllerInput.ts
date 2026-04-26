@@ -45,10 +45,7 @@ export function useControllerInput() {
     captureEnabled,
     handleToggleCaptureHotkey,
   );
-  const mouse = useMouseCapture(
-    captureEnabled,
-    keyboard.capturedPressedCodes.includes("AltLeft"),
-  );
+  const mouse = useMouseCapture(captureEnabled);
   const resetMouseDeltaRef = useRef(mouse.resetMouseDelta);
 
   useEffect(() => {
@@ -86,7 +83,10 @@ export function useControllerInput() {
 
   const snapshot = useMemo<InputSnapshot>(
     () => ({
-      pressedCodes: keyboard.capturedPressedCodes,
+      pressedCodes: withAltLeftState(
+        keyboard.capturedPressedCodes,
+        mouse.altLeftHeld,
+      ),
       mouseButtons: [],
       mouseDeltaX: mouse.mouseDeltaX,
       mouseDeltaY: mouse.mouseDeltaY,
@@ -97,6 +97,7 @@ export function useControllerInput() {
     [
       captureEnabled,
       keyboard.capturedPressedCodes,
+      mouse.altLeftHeld,
       mouse.mouseDeltaX,
       mouse.mouseDeltaY,
       mouse.pointerLocked,
@@ -351,6 +352,14 @@ export function useControllerInput() {
       );
     }, 180);
   }
+}
+
+function withAltLeftState(pressedCodes: string[], altLeftHeld: boolean): string[] {
+  if (!altLeftHeld || pressedCodes.includes("AltLeft")) {
+    return pressedCodes;
+  }
+
+  return [...pressedCodes, "AltLeft"];
 }
 
 function neutralSnapshot(timestampMs: number): InputSnapshot {

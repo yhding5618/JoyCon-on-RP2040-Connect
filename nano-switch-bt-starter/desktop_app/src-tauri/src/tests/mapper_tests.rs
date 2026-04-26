@@ -203,14 +203,20 @@ fn mapper_maps_mouse_move_to_pro_right_stick() {
     assert_eq!((controller.lx, controller.ly), (0, 0));
     assert_eq!((controller.rx, controller.ry), (12288, 8192));
 
+    let small_delta = mouse_state_for(&profile, 1.0, -1.0, true, true);
+    assert_eq!((small_delta.rx, small_delta.ry), (1024, 1024));
+
     let without_alt = mouse_state_for(&profile, 12.0, -8.0, true, false);
     assert_eq!((without_alt.rx, without_alt.ry), (0, 0));
 
     let right_alt = mouse_state_for_codes(&profile, 12.0, -8.0, true, &["AltRight"]);
     assert_eq!((right_alt.rx, right_alt.ry), (0, 0));
 
-    let unlocked = mouse_state_for(&profile, 12.0, -8.0, false, true);
-    assert_eq!((unlocked.rx, unlocked.ry), (0, 0));
+    let without_pointer_lock = mouse_state_for(&profile, 12.0, -8.0, false, true);
+    assert_eq!(
+        (without_pointer_lock.rx, without_pointer_lock.ry),
+        (12288, 8192)
+    );
 }
 
 #[test]

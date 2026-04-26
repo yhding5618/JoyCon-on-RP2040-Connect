@@ -676,18 +676,15 @@ export function pushInputSnapshot(
       if (
         controllerModel !== "LeftJoyCon" &&
         mouse.enabled &&
-        snapshot.pointerLocked &&
         isAltLeftHeld(pressed)
       ) {
         mouseRx = mouseAxis(
           snapshot.mouseDeltaX,
           mouse.sensitivityX,
-          mouse.deadzone,
         );
         mouseRy = mouseAxis(
           mouse.invertY ? snapshot.mouseDeltaY : -snapshot.mouseDeltaY,
           mouse.sensitivityY,
-          mouse.deadzone,
         );
       }
 
@@ -735,12 +732,11 @@ export function pushInputSnapshot(
   );
 }
 
-function mouseAxis(delta: number, sensitivity: number, deadzone: number): number {
+function mouseAxis(delta: number, sensitivity: number): number {
   const raw = delta * Math.max(0, sensitivity) * mouseStickUnitsPerPixel;
   const clamped = Math.max(-stickExtent, Math.min(stickExtent, raw));
-  const threshold = stickExtent * Math.max(0, Math.min(1, deadzone));
 
-  return Math.abs(clamped) < threshold ? 0 : Math.round(clamped);
+  return clamped === 0 ? 0 : Math.round(clamped);
 }
 
 function clampStickAxis(value: number): number {

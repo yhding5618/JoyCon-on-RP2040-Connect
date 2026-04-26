@@ -136,41 +136,31 @@ fn apply_mouse_to_right_stick(
 ) {
     if profile.controller_model == ControllerModel::LeftJoyCon
         || !profile.mouse.enabled
-        || !input.pointer_locked
         || !is_alt_left_held(input)
     {
         return;
     }
 
-    let mouse_x = mouse_axis(
-        input.mouse_delta_x,
-        profile.mouse.sensitivity_x,
-        profile.mouse.deadzone,
-    );
+    let mouse_x = mouse_axis(input.mouse_delta_x, profile.mouse.sensitivity_x);
     let mouse_y_delta = if profile.mouse.invert_y {
         input.mouse_delta_y
     } else {
         -input.mouse_delta_y
     };
-    let mouse_y = mouse_axis(
-        mouse_y_delta,
-        profile.mouse.sensitivity_y,
-        profile.mouse.deadzone,
-    );
+    let mouse_y = mouse_axis(mouse_y_delta, profile.mouse.sensitivity_y);
 
     state.rx = clamp_stick_axis(state.rx as i32 + mouse_x as i32);
     state.ry = clamp_stick_axis(state.ry as i32 + mouse_y as i32);
 }
 
-fn mouse_axis(delta: f32, sensitivity: f32, deadzone: f32) -> i16 {
+fn mouse_axis(delta: f32, sensitivity: f32) -> i16 {
     let raw = delta * sensitivity.max(0.0) * MOUSE_STICK_UNITS_PER_PIXEL;
     let clamped = raw.clamp(
         -(KEYBOARD_STICK_EXTENT as f32),
         KEYBOARD_STICK_EXTENT as f32,
     );
-    let threshold = KEYBOARD_STICK_EXTENT as f32 * deadzone.clamp(0.0, 1.0);
 
-    if clamped.abs() < threshold {
+    if clamped == 0.0 {
         0
     } else {
         clamped.round() as i16
